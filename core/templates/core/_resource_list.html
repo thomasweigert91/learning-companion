@@ -1,17 +1,24 @@
 {# Erwartet "goal" im Kontext. Badge-Klasse aus resource.type, Label aus get_type_display. #}
 {% if goal.resources.all %}
-    <ul class="resource-list">
+    <ul class="list-group list-group-flush resource-list">
         {% for resource in goal.resources.all %}
-            <li>
+            <li class="list-group-item d-flex align-items-center gap-3 py-3">
                 <span class="badge badge-{{ resource.type }}">{{ resource.get_type_display }}</span>
-                <a href="{{ resource.url }}" target="_blank" rel="noopener noreferrer">{{ resource.title }}</a>
+                <a class="me-auto text-break" href="{{ resource.url }}" target="_blank" rel="noopener noreferrer">
+                    {{ resource.title }}<i class="bi bi-box-arrow-up-right small ms-1" aria-hidden="true"></i><span class="visually-hidden"> (oeffnet in neuem Tab)</span>
+                </a>
                 <form action="{% url 'core:resource_delete' resource.pk %}" method="post">
                     {% csrf_token %}
-                    <button type="submit">Entfernen</button>
+                    <button type="submit" class="btn btn-sm btn-outline-danger"
+                            aria-label="Ressource {{ resource.title }} entfernen" title="Entfernen">
+                        <i class="bi bi-x-lg" aria-hidden="true"></i>
+                    </button>
                 </form>
             </li>
         {% endfor %}
     </ul>
 {% else %}
-    <p>Noch keine Ressourcen zu diesem Lernziel.</p>
+    <div class="card-body">
+        <p class="text-body-secondary mb-0">Noch keine Ressourcen zu diesem Lernziel.</p>
+    </div>
 {% endif %}

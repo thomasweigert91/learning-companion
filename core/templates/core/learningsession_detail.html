@@ -3,35 +3,52 @@
 {% block title %}Lernsitzung &ndash; Learning Companion{% endblock %}
 
 {% block content %}
-    <h1>Lernsitzung vom {{ session.date|date:"d.m.Y" }}</h1>
+    <div class="row justify-content-center">
+        <div class="col-lg-8 col-xl-7">
+            <nav aria-label="Brotkruemelnavigation" class="mb-2">
+                <ol class="breadcrumb small mb-0">
+                    <li class="breadcrumb-item"><a href="{% url 'core:session_list' %}">Lernsitzungen</a></li>
+                    <li class="breadcrumb-item active" aria-current="page">{{ session.date|date:"d.m.Y" }}</li>
+                </ol>
+            </nav>
+            <h1 class="h2 mb-4">Lernsitzung vom {{ session.date|date:"d.m.Y" }}</h1>
 
-    <dl>
-        <dt>Lernziel</dt>
-        <dd><a href="{% url 'core:goal_detail' session.goal.pk %}">{{ session.goal.title }}</a></dd>
+            <div class="card border-0 shadow-sm">
+                <div class="card-body p-4">
+                    <dl class="row mb-0">
+                        <dt class="col-sm-3 text-body-secondary fw-normal">Lernziel</dt>
+                        <dd class="col-sm-9"><a href="{% url 'core:goal_detail' session.goal.pk %}">{{ session.goal.title }}</a></dd>
 
-        <dt>Dauer</dt>
-        <dd>{{ session.duration }} Minuten</dd>
+                        <dt class="col-sm-3 text-body-secondary fw-normal">Dauer</dt>
+                        <dd class="col-sm-9"><i class="bi bi-hourglass-split me-1 text-body-secondary" aria-hidden="true"></i>{{ session.duration }} Minuten</dd>
 
-        <dt>Notizen</dt>
-        <dd>{{ session.notes|default:"(keine Notizen)" }}</dd>
+                        <dt class="col-sm-3 text-body-secondary fw-normal">Notizen</dt>
+                        <dd class="col-sm-9">{{ session.notes|default:"(keine Notizen)"|linebreaksbr }}</dd>
 
-        <dt>Tags</dt>
-        <dd>
-            {% if session.tags.all %}
-                <ul>
-                    {% for tag in session.tags.all %}
-                        <li>{{ tag.name }}</li>
-                    {% endfor %}
-                </ul>
-            {% else %}
-                (keine Tags)
-            {% endif %}
-        </dd>
-    </dl>
-
-    <p>
-        <a href="{% url 'core:session_edit' session.pk %}">Bearbeiten</a>
-        <a href="{% url 'core:session_delete' session.pk %}">Loeschen</a>
-        <a href="{% url 'core:session_list' %}">Zurueck zur Liste</a>
-    </p>
+                        <dt class="col-sm-3 text-body-secondary fw-normal">Tags</dt>
+                        <dd class="col-sm-9 mb-0">
+                            {% if session.tags.all %}
+                                <ul class="list-inline mb-0">
+                                    {% for tag in session.tags.all %}
+                                        <li class="list-inline-item mb-1"><span class="badge rounded-pill text-bg-light border"><i class="bi bi-tag me-1" aria-hidden="true"></i>{{ tag.name }}</span></li>
+                                    {% endfor %}
+                                </ul>
+                            {% else %}
+                                (keine Tags)
+                            {% endif %}
+                        </dd>
+                    </dl>
+                </div>
+                <div class="card-footer bg-body-tertiary d-flex flex-wrap gap-2 py-3">
+                    <a class="btn btn-link me-auto px-0" href="{% url 'core:session_list' %}">Zurueck zur Liste</a>
+                    <a class="btn btn-outline-secondary" href="{% url 'core:session_edit' session.pk %}">
+                        <i class="bi bi-pencil me-1" aria-hidden="true"></i>Bearbeiten
+                    </a>
+                    <a class="btn btn-outline-danger" href="{% url 'core:session_delete' session.pk %}">
+                        <i class="bi bi-trash3 me-1" aria-hidden="true"></i>Loeschen
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
 {% endblock %}

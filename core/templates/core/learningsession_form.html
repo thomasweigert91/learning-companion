@@ -3,20 +3,25 @@
 {% block title %}Lernsitzung bearbeiten &ndash; Learning Companion{% endblock %}
 
 {% block content %}
-    <h1>{% if form.instance.pk %}Lernsitzung bearbeiten{% else %}Neue Lernsitzung{% endif %}</h1>
-
-    {% if form.errors %}
-        <div class="errors">
-            <p>Bitte korrigiere die folgenden Eingaben:</p>
-            {{ form.errors }}
+    <div class="row justify-content-center">
+        <div class="col-lg-8 col-xl-7">
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-body py-3">
+                    <h1 class="h4 mb-0"><i class="bi bi-clock-history text-primary me-2" aria-hidden="true"></i>{% if form.instance.pk %}Lernsitzung bearbeiten{% else %}Neue Lernsitzung{% endif %}</h1>
+                </div>
+                <form method="post">
+                    <div class="card-body p-4">
+                        {% csrf_token %}
+                        {% include "core/_form.html" %}
+                    </div>
+                    <div class="card-footer bg-body-tertiary d-flex justify-content-end gap-2 py-3">
+                        <a class="btn btn-outline-secondary" href="{% if form.instance.pk %}{% url 'core:session_detail' form.instance.pk %}{% else %}{% url 'core:session_list' %}{% endif %}">Abbrechen</a>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check-lg me-1" aria-hidden="true"></i>Speichern
+                        </button>
+                    </div>
+                </form>
+            </div>
         </div>
-    {% endif %}
-
-    <form method="post">
-        {% csrf_token %}
-        {{ form.as_p }}
-        <button type="submit">Speichern</button>
-    </form>
-
-    <a href="{% url 'core:session_list' %}">Abbrechen</a>
+    </div>
 {% endblock %}

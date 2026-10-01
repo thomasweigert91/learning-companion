@@ -1,179 +1,167 @@
-# Code Review: Containerisierung und Continuous Integration
+# Code Review: UI- und Styling-Upgrade auf Bootstrap 5
 
 **Status: APPROVED**
 
 Geprüft gegen `.workflow/artifacts/ticket.md` und `.workflow/artifacts/plan.md`.
-Stand: Django 5.2.17, Python 3.12.10, gunicorn 23.0.0, whitenoise 6.12.0, ruff 0.16.9, Docker 29.7.2.
-**145 Tests** unverändert grün, `ruff check .` ohne Befund, `validate_code.ps1` Exit-Code 0.
+Stand: Django 5.2.17, Bootstrap 5.3.8, Bootstrap Icons 1.13.1.
+**175 Tests** (145 Bestand + 30 neu), `ruff check .` ohne Befund, `validate_code.ps1` Exit-Code 0.
 
-> **Docker war real verfügbar.** Der Daemon lief zunächst nicht; Docker Desktop wurde gestartet, anschließend wurden Build **und** Laufzeitverhalten tatsächlich ausgeführt. Dieses Review stützt sich damit nicht auf einen Syntax-Check, sondern auf einen laufenden Container.
-
-Neue Dateien: `Dockerfile`, `.dockerignore`, `entrypoint.sh`, `docker-compose.yml`, `.github/workflows/ci.yml`, `requirements-dev.txt`, `pyproject.toml`
-Geändert: `requirements.txt`, `learning_companion/settings.py`, `.env.example`, `.gitattributes`, `core/services/ai_service.py`
+> **Geprüft wurde nicht nur das HTML, sondern die gerenderte Oberfläche.** Tests sehen nicht, ob CSS im Browser tatsächlich ankommt — ein falscher SRI-Hash etwa würde das Stylesheet stillschweigend verwerfen. Deshalb wurden alle Seitentypen mit Playwright in Desktop- (1280 px) und Handybreite (390 px) aufgerufen, gemessen und als Screenshot begutachtet. Dabei wurde ein Darstellungsfehler gefunden und behoben (Abschnitt 4).
 
 ---
 
-## 1. Abdeckung der Akzeptanzkriterien
+## 1. Vollständigkeit
 
-### Dockerfile
+### Abdeckung der Seiten
 
-| # | Kriterium | Nachweis | Erfüllt |
-|---|---|---|---|
-| 1 | Multi-Stage auf `python:3.12-slim` | `builder` baut Wheels, `runtime` installiert daraus | ja |
-| 2 | Keine Build-Toolchain in der Runtime | `command -v gcc cc` im Container → "keine Compiler gefunden" | ja |
-| 3 | Unprivilegierter Benutzer, UID != 0 | `docker run --rm --entrypoint id … -u` → **1000**; `whoami` → `app` | ja |
-| 4 | gunicorn als Anwendungsprozess, mit Versionsgrenze | `CMD` ruft `learning_companion.wsgi:application`; `gunicorn>=23.0,<24.0`, installiert 23.0.0 | ja |
-| 5 | Port 8000, gebunden an `0.0.0.0` | `EXPOSE 8000`, `--bind 0.0.0.0:8000`; Log: "Listening at: http://0.0.0.0:8000" | ja |
-| 6 | Keine Secrets im Image | siehe Abschnitt 2 | ja |
-| 7 | `PYTHONDONTWRITEBYTECODE`/`PYTHONUNBUFFERED` | in beiden Stages gesetzt | ja |
+| Bereich | Templates | Umgesetzt |
+|---|---|---|
+| Navigation | `base.html`, `_nav_link.html` | Navbar mit Collapse, aktiver Bereich, User-Dropdown, Skip-Link, Alerts, Footer |
+| Startseite | `home.html`, `_home_card.html` | Hero (anonym), Schnellzugriffs-Cards (angemeldet) |
+| Auth | `login.html`, `register.html` | zentrierte Cards, `form-control`, volle Button-Breite |
+| Profil | `profile_detail.html`, `profile_form.html` | Avatar-Card mit Focus-Area-Badges; Formular-Card mit Chips |
+| Dashboard | `dashboard.html` | 3 KPI-Karten, 3 Tabellen-Cards mit `progress`-Balken |
+| Goals | `goal_list.html`, `goal_detail.html`, `goal_form.html`, `goal_confirm_delete.html`, `_status_badge.html` | Card-Grid mit Status-Badges und Aktionen; Detail mit Sessions-Tabelle, Ressourcen, KI-Card |
+| Sessions | `learningsession_list.html`, `…_detail.html`, `…_form.html`, `…_confirm_delete.html` | Tabelle mit Tag-Badges; Detail-Card; Formular mit Chips |
+| Resources | `_resource_list.html`, `resource_confirm_delete.html` | List-Group mit Typ-Badges; Lösch-Card |
+| Formulare (alle) | `_form.html` + `core/templatetags/ui.py` | ein Partial für alle sechs Formulare inkl. Djangos `AuthenticationForm` |
 
-### Entrypoint
+`git diff --name-only -- core/templates/` → **alle 17** Bestands-Templates geändert. Kein `{{ form.as_p }}` und keine Regel des alten Hand-CSS (`.kpi-card`, `.bar-track`, `.dashboard-table`) mehr vorhanden.
 
-| # | Kriterium | Nachweis | Erfüllt |
-|---|---|---|---|
-| 8 | `migrate` → `collectstatic` → `exec "$@"` | Container-Log zeigt beide Schritte vor dem gunicorn-Start | ja |
-| 9 | `#!/bin/sh` + `set -e` | `od -c` auf die erste Zeile im Image: `# ! / b i n / s h \n` | ja |
-| 10 | LF-Zeilenenden, ausführbar | 0 CR-Bytes in der Datei; im Image `-rwxr-xr-x`; `.gitattributes` setzt `*.sh text eol=lf` | ja |
-
-**gunicorn läuft tatsächlich als PID 1** — im Log booten die Worker mit PID 29/30/31 unter dem Master mit `[1]`. `exec` greift also; ein `docker stop` erreicht den Prozess direkt, statt in den 10-Sekunden-Timeout zu laufen.
-
-### Konfiguration
+### Akzeptanzkriterien
 
 | # | Kriterium | Nachweis | Erfüllt |
 |---|---|---|---|
-| 11 | `STATIC_ROOT` gesetzt, `collectstatic` läuft | lokal: "127 static files copied, 381 post-processed"; im Container identisch | ja |
-| 12 | `DJANGO_DB_PATH` konfigurierbar, Default unverändert | `os.environ.get("DJANGO_DB_PATH") or BASE_DIR / "db.sqlite3"` | ja |
-| 13 | Statische Dateien bei `DEBUG=False` | Container meldet `DEBUG = False`; `/admin/login/` → 200, darin `/static/admin/css/base.96c479cedf7a.css` → **200, 22285 Bytes** | ja |
-| 14 | `.env.example` dokumentiert die neuen Variablen | beide Variablen mit Kommentar ergänzt | ja |
-
-Der gehashte Dateiname belegt nebenbei, dass `CompressedManifestStaticFilesStorage` wirklich greift und nicht stillschweigend auf den Default zurückfällt.
-
-### .dockerignore, Compose, CI
-
-| # | Kriterium | Nachweis | Erfüllt |
-|---|---|---|---|
-| 15 | Ausschlüsse vollständig | `.venv/`, `.git/`, `db.sqlite3`, `__pycache__/`, `*.py[cod]`, `.env`, `staticfiles/`, `.workflow/` — alle vorhanden | ja |
-| 16 | Build-Context klein | `transferring context: 4.99kB` gegenüber einem Arbeitsverzeichnis mit `.venv` und `.git` im dreistelligen MB-Bereich | ja |
-| 17 | Compose baut und mappt Port 8000 | `docker compose up -d` → HTTP 200 auf `localhost:8000` | ja |
-| 18 | Optionale `.env`, keine Secrets im Versionsstand | `env_file: [{path: .env, required: false}]`; gesetzt sind nur `DJANGO_DEBUG` und `DJANGO_ALLOWED_HOSTS` | ja |
-| 19 | Benanntes Volume, Daten überleben `down`/`up` | **real geprüft**: Nutzer angelegt → `docker compose down` → `up` → `ueberlebt: True` | ja |
-| 20 | `docker compose config` validiert | Exit-Code 0 | ja |
-| 21 | Trigger `push` + `pull_request` auf `main` | YAML geparst: `{'push': {'branches': ['main']}, 'pull_request': {'branches': ['main']}}` | ja |
-| 22 | Python 3.12 + pip-Caching | `actions/setup-python@v5`, `cache: pip`, `cache-dependency-path` über beide Requirements-Dateien | ja |
-| 23 | Linter, Check, Migrationsprüfung, Tests | Steps geparst: Linter → Django System-Check → "Migrationen vollstaendig?" → Testsuite | ja |
-| 24 | `permissions: contents: read`, Actions gepinnt | gesetzt; `@v4`/`@v5`, kein `@master` | ja |
-| 25 | Zweiter Job baut das Image | Job `docker` mit `docker build` | ja |
-| 26 | CI ohne Secrets | keine `secrets.`-Referenz im Workflow; ohne `OPENAI_API_KEY` greift der Mock-Modus | ja |
-
-### Validierung
-
-| # | Kriterium | Nachweis | Erfüllt |
-|---|---|---|---|
-| 27 | `docker build` fehlerfrei | `BUILD-EXIT=0`, Image 303 MB | ja |
-| 28 | Container startet und antwortet | Migration + collectstatic im Log, `GET /` → **200** | ja |
-| 29 | `ruff check` ohne Befund | "All checks passed!" | ja |
-| 30 | 145 Tests weiterhin grün | `Ran 145 tests — OK` nach der Settings-Änderung | ja |
+| 1 | Bootstrap 5.3.8 + Icons 1.13.1 per CDN | `base.html`; im Browser: `bootstrap.min.css` mit 1297 Regeln, Icons-CSS mit 2080 Regeln, `window.bootstrap` meldet 5.3.8 | ja |
+| 2 | SRI + `crossorigin` an allen drei Ressourcen | Hashes aus den ausgelieferten Dateien berechnet (`openssl dgst -sha384`); `test_bootstrap_css_und_js_mit_sri`; **Browser hat alle drei akzeptiert**, 0 Konsolenfehler | ja |
+| 3 | Script am Ende von `<body>` | `test_script_steht_am_ende_des_body` | ja |
+| 4 | Responsive Navbar mit Toggler | Handybreite: Toggler klappt auf, `aria-expanded` wechselt auf `true` | ja |
+| 5 | Aktiver Link mit `.active` **und** `aria-current` | `NavigationTests` (6 Fälle): Dashboard, Goal-Detail, Resource-Route, Session-Seiten, genau ein aktiver Link | ja |
+| 6 | User-Dropdown, Logout als POST | `test_logout_ist_post_formular_im_dropdown` (Form + CSRF-Token im Dropdown); im Browser aufgeklappt | ja |
+| 7 | Anonym: Login/Registrieren statt Dropdown | `test_anonym_sieht_login_und_registrieren` | ja |
+| 8 | `test_navbar_enthaelt_dashboard_link` grün | unverändert grün | ja |
+| 9 | Container, Alerts (`error` → `danger`) | `base.html`; Fehlermeldungen der KI-Views erscheinen weiterhin (`test_ai_views`) | ja |
+| 10–17 | Seiten-Layouts laut Ticket | Abschnitt "Abdeckung"; Screenshots aller Seitentypen begutachtet | ja |
+| 18 | Ein Formular-Partial, `forms.py` unangetastet | `git diff core/forms.py` leer; Login gestylt (`test_login_formular_gestylt`) | ja |
+| 19 | `is-invalid`, `aria-invalid`, `aria-describedby` | `test_fehler_markiert_feld`; siehe Abschnitt 3 zur Herkunft der ARIA-Attribute | ja |
+| 20 | Pflichtfelder markiert, Hinweis am Formular | `test_pflichtfeld_hinweis`; Login bewusst ohne (`test_login_ohne_pflichtfeld_hinweis`) | ja |
+| 21–26 | Barrierefreiheit | siehe Abschnitt 2 | ja |
+| 27 | 145 Bestandstests unverändert grün | `git diff --name-only -- core/tests/` → **leer**; 145/145 grün | ja |
+| 28 | URLs, Feldnamen, IDs, `badge-{typ}` erhalten | `id="status"`, `id_<feld>`, `badge-article/-video/-repo/-doc`; `test_resource_badge_class_matches_type` grün | ja |
+| 29 | KI-Begriffe nur mit Ergebnis | `test_ai_views` (prüft Abwesenheit) grün; die Wörter stehen ausschließlich in den `{% if %}`-Blöcken | ja |
+| 30 | Neue Tests für die Kernpunkte | `core/tests/test_ui.py`, 30 Tests | ja |
+| — | Sessions ohne N+1 | `prefetch_related("tags")`; `test_session_liste_zeigt_tags_ohne_n_plus_1` (Query-Zahl bei 3 und 6 Sessions identisch) | ja |
 
 ---
 
-## 2. Sicherheit
+## 2. Barrierefreiheit
 
-### Keine Secrets im Image
-
-Vier unabhängige Prüfungen, alle am gebauten Image durchgeführt:
+### Im Browser verifiziert
 
 | Prüfung | Ergebnis |
 |---|---|
-| `docker run --rm --entrypoint env` nach `SECRET\|OPENAI\|KEY\|PASSWORD` | ein Treffer: `GPG_KEY=7169605F…` |
-| `/app/.env` vorhanden? | nein |
-| `/app/db.sqlite3` vorhanden? | nein |
-| `docker history --no-trunc` nach `sk-` | 0 Treffer |
+| Skip-Link ist erstes Tab-Ziel | Tab → Fokus auf "Zum Inhalt springen", Element sichtbar |
+| Skip-Link verschiebt den **Fokus**, nicht nur die Scrollposition | Enter → `document.activeElement` ist `MAIN#main-content` (dank `tabindex="-1"`) |
+| Navbar-Toggler und Dropdown melden ihren Zustand | `aria-expanded` wechselt beim Öffnen auf `true` |
+| Kein horizontales Scrollen in Handybreite | `scrollWidth ≤ innerWidth` auf Profil, Dashboard, Goal-Liste, Goal-Detail, Sessions, Lösch-Bestätigung |
+| Clickjacking-Schutz intakt | Einbetten per `<iframe>` wird von `X-Frame-Options: DENY` blockiert |
 
-**Zum `GPG_KEY`-Treffer:** Der stammt aus dem offiziellen `python:3.12-slim`-Basisimage und ist der *öffentliche* Signaturschlüssel-Fingerprint der Python-Release-Manager, mit dem das Tarball beim Bau verifiziert wird. Ein öffentlicher Fingerprint, kein Geheimnis — er ist in jedem offiziellen Python-Image enthalten und wird vom Grep nur wegen der Zeichenfolge "KEY" erfasst. Kein Befund.
+### Statisch und per Test geprüft
 
-Das Image enthält weder `DJANGO_SECRET_KEY` noch `OPENAI_API_KEY` als `ENV` oder `ARG`. Gesetzt sind ausschließlich Pfade (`DJANGO_DB_PATH`, `DJANGO_STATIC_ROOT`). Die `.dockerignore` schließt `.env` zusätzlich aus, sodass auch ein versehentliches `COPY . .` den Schlüssel nicht einzöge — zwei unabhängige Schichten.
+| Kriterium | Nachweis |
+|---|---|
+| Dekorative Icons `aria-hidden="true"` | `grep` über alle Templates: kein `<i class="bi …">` ohne; `test_dekorative_icons_sind_versteckt` auf vier Seiten |
+| Icon-only-Buttons mit zugänglichem Namen | Bearbeiten/Löschen in der Goal-Liste und Entfernen bei Ressourcen tragen `aria-label` mit dem Objektnamen ("Ressource Doku entfernen"), nicht nur "Entfernen"; `test_icon_buttons_haben_zugaenglichen_namen` |
+| "Details"-Links unterscheidbar | visuell versteckter Zusatz "zu <Titel>" — Screenreader-Linklisten zeigen nicht zehnmal "Details" |
+| Tabellen | `<caption>` + `<th scope="col">` in allen Tabellen; `test_tabellen_mit_caption_und_scope` |
+| Progress-Balken | `role="progressbar"`, sprechendes `aria-label` ("Python: 200 Minuten"), `aria-valuenow/-min/-max`; `test_dashboard_progressbar_aria` |
+| Neuer Tab angekündigt | visuell versteckt "(oeffnet in neuem Tab)"; alle `_blank`-Links mit `rel="noopener noreferrer"` |
+| Genau eine `<h1>` | `test_genau_eine_h1_je_seite` über 11 Seiten. `home.html` enthält zwei `<h1>`, die aber in exklusiven `{% if %}`/`{% else %}`-Zweigen stehen |
+| Status nie nur über Farbe | jedes Badge enthält Icon **und** Text; `test_status_badge_mit_text` |
+| Checkbox-Gruppen | `<fieldset>` + `<legend>` statt eines einzelnen `<label>`; `test_mehrfachauswahl_als_fieldset` |
+| Landmarks | `<header>`, `<nav aria-label="Hauptnavigation">`, `<main>`, `<footer>`; Breadcrumbs als eigene `<nav>` mit `aria-current="page"` |
+| Reduzierte Bewegung | Hover-Anhebung der Cards unter `prefers-reduced-motion: reduce` abgeschaltet |
+| Kontrast | Bootstrap-`text-bg-*` erfüllt AA; die vier Ressourcen-Badge-Farben erreichen mit weißer Schrift je ≥ 4,5:1 |
 
-### Non-root
-
-`USER app` steht **vor** `ENTRYPOINT`/`CMD`, greift also für den Anwendungsprozess und nicht erst für spätere Layer. UID 1000, kein Home-Verzeichnis, `/usr/sbin/nologin` als Shell. Die Verzeichnisrechte sind passend gesetzt: `/data` und `/app/staticfiles` gehören `app:app`, der Anwendungscode gehört ihm über `COPY --chown`.
-
-Das `entrypoint.sh` gehört bewusst `root` mit `0755` — der unprivilegierte Prozess darf es ausführen, aber nicht verändern. Das ist die richtige Richtung; ein `--chown=app` auf das Entrypoint-Script wäre eine unnötige Angriffsfläche.
-
-**Der kritische Punkt an dieser Stelle** ist die Kombination aus Non-Root und SQLite: SQLite legt neben der Datenbank eine Journal-Datei an und braucht deshalb Schreibrechte auf das *Verzeichnis*, nicht nur auf die Datei. Ein Dockerfile, das nur `chown` auf die DB-Datei setzt, baut sauber und scheitert erst beim ersten Schreibzugriff zur Laufzeit. Hier ist `/data` als Ganzes übereignet, und der Laufzeit-Test belegt, dass Migration und Schreibzugriff funktionieren.
-
-### CI
-
-- `permissions: contents: read` — der Workflow kann nichts schreiben, auch nicht bei einem kompromittierten Step.
-- Actions auf Major-Versionen gepinnt (`@v4`, `@v5`), kein `@master`.
-- Keine `secrets`-Referenz, keine `pull_request_target`-Verwendung (die Fremd-PRs Zugriff auf Secrets gäbe).
-- Der `docker`-Job baut nur und pusht nicht; es sind keine Registry-Zugangsdaten im Spiel.
-
-### Weitere Prüfungen
-
-- **Angriffsfläche Image:** keine Build-Toolchain, kein `curl`/`wget`-Install, keine zusätzlichen apt-Pakete in der Runtime.
-- **`ALLOWED_HOSTS`:** bleibt umgebungsgesteuert; die Compose-Datei setzt den restriktiven Default `localhost,127.0.0.1` statt `*`.
-- **`DEBUG`:** die Compose-Datei setzt explizit `False` — ein Container mit aktivem Debug-Modus und damit einsehbaren Settings wäre der klassische Fehler an dieser Stelle.
+**Eine Anmerkung ohne Nachbesserungsbedarf:** Der gelbe Wochen-Balken (`bg-warning`) erreicht gegen seine graue Spur nicht das 3:1-Kontrastziel für Grafiken (WCAG 1.4.11). Er ist aber rein ergänzend — derselbe Wert steht als Zahl in der Nachbarspalte und als `aria-label` am Balken. Es geht keine Information verloren.
 
 ---
 
-## 3. Code-Qualität
+## 3. Befund im Zuge der Umsetzung: ARIA kommt von Django selbst
 
-**Positiv:**
+Der Plan sah vor, dass der Filter `bs_widget` `aria-describedby` selbst zusammensetzt — mit der Begründung, Django verknüpfe sonst nur den Hilfetext. Eine **Mutationsprobe** hat diese Annahme widerlegt: Nach Entfernen der eigenen Fehler-Verknüpfung blieb `test_fehler_markiert_feld` grün.
 
-- Die Settings-Änderungen sind strikt rückwärtskompatibel: `os.environ.get(...) or BASE_DIR / ...` lässt die lokale Entwicklung unverändert. Die `or`-Form statt eines zweiten Arguments fängt zusätzlich den Fall ab, dass die Variable *gesetzt, aber leer* ist — genau das, was `.env.example` mit `DJANGO_DB_PATH=` vorgibt. Mit `os.environ.get("DJANGO_DB_PATH", default)` wäre der Pfad in dem Fall der leere String gewesen und Django hätte beim Start eine unbrauchbare Datenbank konfiguriert. Der Unterschied ist subtil und hier richtig gelöst.
-- Die drei nicht offensichtlichen Stellen sind im Code begründet, nicht stillschweigend gelöst: `exec` im Entrypoint (Signal-Weiterreichung), `/data`-Ownership (SQLite-Journal), WhiteNoise-Position in der Middleware-Kette.
-- `requirements-dev.txt` trennt den Linter sauber vom Laufzeit-Image; `ruff` landet nicht im Container.
-- Kein `version:`-Schlüssel in der Compose-Datei — in aktuellen Compose-Versionen obsolet und nur eine Warnquelle.
+Ursache (`django/forms/boundfield.py`): Seit **Django 5.2** erzeugt `BoundField.aria_describedby` selbst `aria-invalid` und `aria-describedby` nach der Konvention `<id>_helptext` / `<id>_error`. Die Annahme galt nur für 5.0/5.1.
 
-**Während des Reviews behoben:** `ruff` meldete drei `B904`-Verstöße in `core/services/ai_service.py` (Feature 4): In den `except`-Blöcken wurde `AIServiceError` ohne `from` geworfen. Das ist kein kosmetischer Befund — ohne explizites `from None` hängt Python die Originalausnahme als `__context__` an, und ein Traceback hätte den SDK-Fehler mitsamt möglichem Schlüsselfragment weitergetragen. Genau das wollte der Code laut eigenem Kommentar ("weder Stacktrace noch SDK-Rohtext noch ein Key-Fragment beim Nutzer") verhindern. Mit `raise … from None` ist die Absicht jetzt auch technisch umgesetzt. Die Tests bleiben unverändert grün.
+Konsequenz:
 
-**Eine Anmerkung ohne Nachbesserungsbedarf:** Das Image ist mit 303 MB nicht winzig. Der Löwenanteil stammt aus dem `openai`-SDK samt `pydantic`-Abhängigkeiten, nicht aus vermeidbarem Ballast — die Runtime-Stage enthält nachweislich keine Build-Werkzeuge. Ein `alpine`-Basisimage würde Größe gegen musl-Kompatibilitätsrisiken tauschen; das lohnt hier nicht.
+- Der eigene ARIA-Code wurde **entfernt**; `bs_widget` vergibt nur noch die CSS-Klasse. Das Partial stellt sicher, dass Hilfe- und Fehlertext genau die IDs tragen, auf die Django verweist.
+- Weil das Verhalten erst ab 5.2 existiert, wurde der Pin in `requirements.txt` von `Django>=5.0` auf **`Django>=5.2`** angehoben. Installiert ist bereits 5.2.17 (LTS), das Docker-Image zieht ebenfalls 5.2.x — es ändert sich nichts an der laufenden Umgebung, nur die Untergrenze ist jetzt ehrlich.
+- Gegenprobe an der Stelle, die tatsächlich von uns abhängt: Die Fehler-ID im Partial testweise umbenannt → `test_fehler_markiert_feld` **rot**. Der Test prüft also den Vertrag zwischen Partial und Django.
 
 ---
 
-## 4. Abweichungen gegenüber dem Plan
+## 4. Befund der Sichtprüfung: Scrollleiste in Tabellen
+
+**Gefunden:** In der Sessions-Tabelle erschien innerhalb der Card eine vertikale Scrollleiste.
+
+**Ursache (im Browser gemessen):** `scrollHeight` 247 gegenüber `clientHeight` 246 — überlaufendes Element war die visuell versteckte `<caption>`. Bootstrap 5.3 nimmt Captions bewusst von `position: absolute` aus (`.visually-hidden:not(caption)`), weil absolut positionierte Captions das Tabellenlayout stören. Die Caption bleibt also 1 px hoch im Fluss. Da `.table-responsive` `overflow-x: auto` setzt, wird nach CSS-Spezifikation auch die y-Achse scrollbar.
+
+**Behoben:** `.table-responsive { overflow-y: hidden; }` in `base.html`, mit Begründung im Kommentar. Der Wrapper soll ohnehin nur horizontal scrollen. Nachgemessen: `overflowY: hidden`, keine Scrollleiste, Caption-Text weiterhin im Accessibility-Baum.
+
+Ein reiner HTML-Test hätte diesen Fehler nicht finden können — er existiert erst im Zusammenspiel von Bootstrap-CSS und Browser-Layout.
+
+---
+
+## 5. Sicherheit
+
+- **SRI:** Alle drei CDN-Ressourcen mit SHA-384, berechnet aus den tatsächlich ausgelieferten Dateien — nicht aus Dokumentation oder Gedächtnis übernommen. Ein manipuliertes CDN-Asset würde der Browser verwerfen.
+- **XSS:** Die einzige `|safe`-Stelle ist `{{ field.help_text|safe }}` in `_form.html`. Hilfetexte stammen aus Modell- und Formulardefinitionen (inkl. Djangos HTML-Liste der Passwortregeln), nie aus Nutzereingaben — identisch mit Djangos eigenem Standard-Template. Beschreibungen und Notizen werden neu per `|linebreaksbr` ausgegeben; der Filter escaped vor dem Umbruch.
+- **CSRF:** Alle POST-Formulare (Logout im Dropdown, KI-Aktionen, Ressource entfernen, Lösch-Bestätigungen) tragen weiterhin `{% csrf_token %}`. Löschen bleibt ausschließlich POST.
+- **Tabnabbing:** alle `target="_blank"`-Links mit `rel="noopener noreferrer"`.
+- **Clickjacking:** `X-Frame-Options: DENY` unverändert wirksam (im Browser bestätigt).
+
+---
+
+## 6. Abweichungen gegenüber Ticket und Plan
 
 | Abweichung | Bewertung |
 |---|---|
-| Zusätzlich `pyproject.toml` mit `[tool.ruff]`. | War in den betroffenen Dateien des Plans bereits gelistet; stellt sicher, dass lokal und in der CI derselbe Regelsatz greift. |
-| `core/services/ai_service.py` geändert (B904). | Nicht geplant, aber notwendig: ohne die Korrektur wäre der neue CI-Linter-Step beim ersten Lauf rot. Ein Feature, das eine Prüfung einführt, muss den Bestand durch diese Prüfung bringen. |
-| `.gitattributes` um `*.sh text eol=lf` erweitert. | Im Plan als Absicherung vorgesehen und umgesetzt. |
-
-Keine Abweichung verändert den fachlichen Umfang des Tickets.
-
----
-
-## 5. Migrationen
-
-Keine Modell-Änderung, keine neue Migration. `makemigrations --check --dry-run` meldet "No changes detected" — und prüft das ab jetzt bei jedem CI-Lauf automatisch mit.
+| Django-Pin `>=5.2` statt `>=5.0` | Siehe Abschnitt 3. Macht eine tatsächliche Abhängigkeit sichtbar; die laufende Umgebung bleibt unverändert. |
+| Checkbox-Gruppen werden im Partial selbst gerendert (Bootstrap-`btn-check`-Chips) statt über `bs_widget` | Notwendig: Djangos Gruppen-Template schreibt die übergebene `class` auch auf den äußeren Container-`<div>` — `form-check-input` hätte ihn als 1em-Checkbox gerendert. Namen, Werte und IDs (`id_tags_0` …) entsprechen exakt dem Django-Widget; `test_chip_auswahl_laesst_sich_absenden` und `test_gesetzter_tag_ist_vorausgewaehlt` belegen, dass das Formular die Auswahl unverändert annimmt. |
+| `.table-responsive { overflow-y: hidden; }` | Fix aus der Sichtprüfung, Abschnitt 4. |
+| Zusätzliches Partial `_home_card.html` | im Plan nachgetragen. |
+| "Abbrechen" in Goal- und Session-Formularen führt beim **Bearbeiten** zur Detailseite statt zur Liste | Bewusste UX-Verbesserung: man landet dort, woher man kam. Beim Anlegen bleibt das Ziel die Liste. Reine Link-Ziele, kein View-Verhalten; streng gelesen eine kleine Abweichung von "Verhalten unverändert" und deshalb hier festgehalten. |
+| Breadcrumbs auf Goal- und Session-Detail, "Erfassen"-Button in der Sessions-Card des Goals | additive Navigationshilfen auf bestehende URLs |
+| Ein zunächst gesetztes `novalidate` an Login/Registrierung wurde wieder entfernt | hätte die native Browser-Validierung abgeschaltet und damit Verhalten geändert |
 
 ---
 
-## 6. Verifikation
+## 7. Verifikation
 
 ```powershell
 ruff check .                                        # All checks passed!
 python manage.py check                              # 0 Issues
 python manage.py makemigrations --check --dry-run   # No changes detected
-python manage.py collectstatic --noinput            # 127 Dateien, 381 post-processed
-python manage.py test                               # Ran 145 tests — OK
+python manage.py test                               # Ran 175 tests — OK
 .\.workflow\hooks\validate_code.ps1                 # Exit-Code 0
-
-docker build -t learning-companion:ci .             # Exit 0, 303 MB
-docker run --rm --entrypoint id … -u                # 1000 (non-root)
-docker compose config --quiet                       # Exit 0
-docker compose up -d                                # GET / -> 200
-docker compose down && docker compose up -d         # Daten ueberlebt: True
+git diff --name-only -- core/tests/                 # leer: kein Bestandstest angepasst
 ```
 
-Alle Container-Prüfungen wurden real ausgeführt. Der Testnutzer aus der Persistenzprobe und das Volume wurden anschließend entfernt (`docker compose down -v`).
+**Mutationsproben** (jeweils danach zurückgesetzt):
+
+| Mutation | Ergebnis |
+|---|---|
+| `prefetch_related("tags")` entfernt | `test_session_liste_zeigt_tags_ohne_n_plus_1` rot |
+| Eigene Fehler-Verknüpfung im Filter entfernt | **grün** → führte zum Befund in Abschnitt 3 |
+| Fehler-ID im Partial umbenannt | `test_fehler_markiert_feld` rot |
+
+**Sichtprüfung:** Login (leer und mit Fehler), Dashboard, Goal-Liste, Goal-Detail mit KI-Ergebnis, Sessions-Liste, Session-Formular mit Chips, Profil mit aufgeklapptem Mobil-Menü und Dropdown, Lösch-Bestätigung mobil. Dazu ein temporärer Prüfnutzer mit Beispieldaten, der anschließend samt Daten wieder gelöscht wurde; die Dev-Datenbank ist im Ausgangszustand.
 
 ---
 
-## 7. Fazit
+## 8. Fazit
 
-Alle 30 Akzeptanzkriterien des Tickets sind erfüllt und jeweils durch eine konkrete Messung oder Codestelle belegt. Der Container läuft unprivilegiert, enthält keine Secrets, startet reproduzierbar inklusive Migration und `collectstatic` und beantwortet Requests; die Daten überstehen einen Neustart. Die CI prüft Linter, System-Check, Migrationsvollständigkeit, Testsuite und den Image-Build, ohne Secrets zu benötigen und ohne Schreibrechte zu verlangen.
-
-Ein echter Befund wurde im Zuge des Reviews gefunden und behoben (B904-Exception-Verkettung im AI-Service). Darüber hinaus keine offenen Punkte.
+Alle Seiten sind auf ein einheitliches, responsives Bootstrap-5-Design umgestellt, ohne dass ein einziger Bestandstest angepasst werden musste. Die Barrierefreiheit wurde nicht nur am Markup, sondern im Browser geprüft (Fokusführung, Zustandsattribute, Überlauf in Handybreite). Zwei echte Befunde — eine falsche Annahme über Djangos ARIA-Verhalten und ein Layoutfehler durch versteckte Tabellen-Captions — wurden gefunden, ursächlich erklärt und behoben.
 
 **Freigabe erteilt: APPROVED.**

@@ -1,0 +1,85 @@
+{% load ui %}
+{% comment %}
+Generisches Formular-Partial. Erwartet "form"; optional:
+  error_intro             -- Einleitungssatz des Fehler-Alerts
+  ohne_pflichtmarkierung  -- blendet Sternchen und Pflichtfeld-Hinweis aus (Login)
+Das <form>-Tag und die Buttons setzt die aufrufende Seite selbst.
+{% endcomment %}
+
+{% if form.errors %}
+    <div class="alert alert-danger errors" role="alert">
+        <p class="fw-semibold mb-0">
+            <i class="bi bi-exclamation-triangle-fill me-1" aria-hidden="true"></i>{{ error_intro|default:"Bitte korrigiere die folgenden Eingaben:" }}
+        </p>
+        {% if form.non_field_errors %}
+            <ul class="mb-0 mt-2">
+                {% for fehler in form.non_field_errors %}
+                    <li>{{ fehler }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+        {% for field in form.hidden_fields %}
+            {% for fehler in field.errors %}
+                <p class="mb-0 mt-2">{{ field.label }}: {{ fehler }}</p>
+            {% endfor %}
+        {% endfor %}
+    </div>
+{% endif %}
+
+{% if form|has_required and not ohne_pflichtmarkierung %}
+    <p class="form-text mt-0 mb-3">Pflichtfelder sind mit <span class="text-danger" aria-hidden="true">*</span><span class="visually-hidden">einem Sternchen</span> markiert.</p>
+{% endif %}
+
+{% for field in form.hidden_fields %}{{ field }}{% endfor %}
+
+{% for field in form.visible_fields %}
+    {% if field.use_fieldset %}
+        {# Checkbox-/Radio-Gruppe: fieldset + legend statt eines einzelnen label. #}
+        <fieldset class="mb-3"{% if field.help_text or field.errors %} aria-describedby="{% if field.help_text %}{{ field.auto_id }}_helptext{% endif %}{% if field.help_text and field.errors %} {% endif %}{% if field.errors %}{{ field.auto_id }}_error{% endif %}"{% endif %}>
+            <legend class="form-label fs-6 mb-2">
+                {{ field.label }}{% if field.field.required and not ohne_pflichtmarkierung %}<span class="text-danger ms-1" aria-hidden="true">*</span>{% endif %}
+            </legend>
+            <div class="d-flex flex-wrap gap-2" id="{{ field.auto_id }}">
+                {% for choice in field %}
+                    {# Name, Wert und ID wie im Django-Widget (id_<feld>_<n>). #}
+                    <input type="{{ choice.data.type }}" class="btn-check{% if field.errors %} is-invalid{% endif %}"
+                           name="{{ field.html_name }}" value="{{ choice.data.value }}"
+                           id="{{ choice.id_for_label }}" autocomplete="off"
+                           {% if choice.data.selected %}checked{% endif %}
+                           {% if field.errors %}aria-invalid="true"{% endif %}>
+                    <label class="btn btn-sm btn-outline-primary rounded-pill" for="{{ choice.id_for_label }}">{{ choice.choice_label }}</label>
+                {% empty %}
+                    <span class="form-text mt-0">Keine Auswahl verfuegbar.</span>
+                {% endfor %}
+            </div>
+    {% elif field.widget_type == "checkbox" %}
+        <div class="mb-3 form-check">
+            {{ field|bs_widget }}
+            <label class="form-check-label" for="{{ field.id_for_label }}">
+                {{ field.label }}{% if field.field.required and not ohne_pflichtmarkierung %}<span class="text-danger ms-1" aria-hidden="true">*</span>{% endif %}
+            </label>
+    {% else %}
+        <div class="mb-3">
+            <label class="form-label" for="{{ field.id_for_label }}">
+                {{ field.label }}{% if field.field.required and not ohne_pflichtmarkierung %}<span class="text-danger ms-1" aria-hidden="true">*</span>{% endif %}
+            </label>
+            {{ field|bs_widget }}
+    {% endif %}
+
+            {% if field.help_text %}
+                <div id="{{ field.auto_id }}_helptext" class="form-text">{{ field.help_text|safe }}</div>
+            {% endif %}
+            {% if field.errors %}
+                <div id="{{ field.auto_id }}_error" class="invalid-feedback d-block">
+                    {% for fehler in field.errors %}
+                        <div>{{ fehler }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+
+    {% if field.use_fieldset %}
+        </fieldset>
+    {% else %}
+        </div>
+    {% endif %}
+{% endfor %}

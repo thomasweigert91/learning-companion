@@ -1,0 +1,10 @@
+{# Schnellzugriffs-Card der Startseite. Erwartet url, icon, farbe, titel, text. #}
+<div class="col">
+    <a class="card h-100 border-0 shadow-sm text-decoration-none lc-lift" href="{{ url }}">
+        <div class="card-body">
+            <span class="lc-icon-circle bg-{{ farbe }}-subtle text-{{ farbe }}-emphasis mb-3"><i class="bi bi-{{ icon }}" aria-hidden="true"></i></span>
+            <h2 class="h5 card-title text-body">{{ titel }}</h2>
+            <p class="card-text text-body-secondary small mb-0">{{ text }}</p>
+        </div>
+    </a>
+</div>

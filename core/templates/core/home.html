@@ -3,18 +3,56 @@
 {% block title %}Startseite &ndash; Learning Companion{% endblock %}
 
 {% block content %}
-    <h1>Learning Companion</h1>
     {% if user.is_authenticated %}
-        <p>Willkommen zurueck.</p>
-        <ul>
-            <li><a href="{% url 'core:goal_list' %}">Meine Lernziele</a></li>
-            <li><a href="{% url 'core:session_list' %}">Meine Lernsitzungen</a></li>
-            <li><a href="{% url 'core:profile_detail' %}">Mein Profil</a></li>
-        </ul>
+        <div class="mb-4">
+            <h1 class="h2 mb-1">Willkommen zurueck, {{ user.get_username }}</h1>
+            <p class="text-body-secondary mb-0">Wohin moechtest du als Naechstes?</p>
+        </div>
+
+        <div class="row row-cols-1 row-cols-sm-2 row-cols-lg-4 g-3">
+            {% url 'core:dashboard' as ziel_url %}
+            {% include "core/_home_card.html" with url=ziel_url icon="speedometer2" farbe="primary" titel="Dashboard" text="Kennzahlen und Lernzeit im Ueberblick" %}
+            {% url 'core:goal_list' as ziel_url %}
+            {% include "core/_home_card.html" with url=ziel_url icon="bullseye" farbe="success" titel="Meine Lernziele" text="Ziele anlegen, verfolgen und abschliessen" %}
+            {% url 'core:session_list' as ziel_url %}
+            {% include "core/_home_card.html" with url=ziel_url icon="clock-history" farbe="warning" titel="Meine Lernsitzungen" text="Lernzeit erfassen und nachverfolgen" %}
+            {% url 'core:profile_detail' as ziel_url %}
+            {% include "core/_home_card.html" with url=ziel_url icon="person-circle" farbe="info" titel="Mein Profil" text="Name, Cohort und Focus Areas" %}
+        </div>
     {% else %}
-        <p>
-            Bitte <a href="{% url 'core:login' %}">anmelden</a> oder
-            <a href="{% url 'core:register' %}">registrieren</a>.
-        </p>
+        <div class="p-4 p-md-5 mb-4 bg-body rounded-4 shadow-sm">
+            <div class="row align-items-center g-4">
+                <div class="col-lg-7">
+                    <h1 class="display-5 fw-bold">Learning Companion</h1>
+                    <p class="lead text-body-secondary">
+                        Setze dir Lernziele, erfasse deine Lernsitzungen und behalte deinen
+                        Fortschritt im Blick &ndash; mit KI-gestuetzten Vorschlaegen fuer die
+                        naechsten Schritte.
+                    </p>
+                    <div class="d-flex flex-wrap gap-2 mt-4">
+                        <a class="btn btn-primary btn-lg" href="{% url 'core:register' %}">
+                            <i class="bi bi-person-plus me-1" aria-hidden="true"></i>Jetzt registrieren
+                        </a>
+                        <a class="btn btn-outline-secondary btn-lg" href="{% url 'core:login' %}">Anmelden</a>
+                    </div>
+                </div>
+                <div class="col-lg-5">
+                    <ul class="list-unstyled d-grid gap-3 mb-0">
+                        <li class="d-flex gap-3">
+                            <span class="lc-icon-circle bg-primary-subtle text-primary-emphasis"><i class="bi bi-bullseye" aria-hidden="true"></i></span>
+                            <span><strong class="d-block">Ziele</strong><span class="text-body-secondary">Status von geplant bis erledigt</span></span>
+                        </li>
+                        <li class="d-flex gap-3">
+                            <span class="lc-icon-circle bg-success-subtle text-success-emphasis"><i class="bi bi-clock-history" aria-hidden="true"></i></span>
+                            <span><strong class="d-block">Sitzungen</strong><span class="text-body-secondary">Lernzeit mit Tags erfassen</span></span>
+                        </li>
+                        <li class="d-flex gap-3">
+                            <span class="lc-icon-circle bg-warning-subtle text-warning-emphasis"><i class="bi bi-graph-up" aria-hidden="true"></i></span>
+                            <span><strong class="d-block">Dashboard</strong><span class="text-body-secondary">Lernzeit je Woche und Kategorie</span></span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
     {% endif %}
 {% endblock %}

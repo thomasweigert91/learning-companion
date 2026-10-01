@@ -1,167 +1,144 @@
-# Ticket: Containerisierung und Continuous Integration
+# Ticket: UI- und Styling-Upgrade auf Bootstrap 5
 
 ## 1. Problem / Ziel
 
-Die Anwendung laeuft bisher ausschliesslich lokal im `.venv` ueber den
-Django-Entwicklungsserver. Es gibt weder ein reproduzierbares Artefakt fuer den
-Betrieb noch eine automatisierte Pruefung von Pull Requests -- jeder Lauf der
-Testsuite haengt daran, dass jemand ihn manuell anstoesst.
+Die Oberflaeche der Anwendung besteht aus ungestyltem HTML: Formulare werden per
+`{{ form.as_p }}` ausgegeben, Listen als nackte `<ul>`, die Navigation als lose
+Reihe von Links. Funktional ist alles vorhanden, die App wirkt aber unfertig,
+ist auf Mobilgeraeten muehsam zu bedienen und gibt kaum visuelle Orientierung
+(aktuelle Seite, Status eines Ziels, Fehlerzustaende).
 
-Dieses Ticket schliesst beide Luecken:
+Dieses Ticket stellt **alle Seiten** auf ein einheitliches, responsives
+Bootstrap-5-Design um -- Navigation, Startseite, Auth, Profil, Dashboard, Goals,
+Sessions und Resources. Es ist ein reines Darstellungs-Feature: URLs,
+Formularfelder, Feldnamen, HTML-IDs und das Verhalten der Views bleiben
+unveraendert.
 
-1. **Container** -- ein Multi-Stage-Dockerfile auf Basis `python:3.12-slim`, das
-   die Anwendung unter einem unprivilegierten Benutzer mit `gunicorn` als
-   WSGI-Server startet. Ein Entrypoint-Script fuehrt Migrationen und
-   `collectstatic` vor dem Start zuverlaessig aus. Eine `docker-compose.yml`
-   macht den Container lokal auf Port 8000 startbar.
-2. **CI** -- ein GitHub-Actions-Workflow, der bei `push` und `pull_request` auf
-   `main` die Abhaengigkeiten installiert (mit Cache), den Django-System-Check
-   und einen Linter ausfuehrt und die komplette Testsuite laufen laesst.
-
-**Zwei Voraussetzungen, die der Code heute nicht erfuellt** und die dieses Ticket
-deshalb mit abdeckt:
-
-- `settings.py` definiert kein `STATIC_ROOT`. `collectstatic` bricht ohne diese
-  Einstellung mit `ImproperlyConfigured` ab -- der Entrypoint waere nicht
-  lauffaehig.
-- Die SQLite-Datei liegt per `BASE_DIR / "db.sqlite3"` im Anwendungsverzeichnis.
-  Dieses Verzeichnis gehoert im Image `root`; ein unprivilegierter Prozess kann
-  dort weder die Datenbank anlegen noch die von SQLite benoetigte
-  Journal-Datei schreiben. Der Pfad muss ueber die Umgebung auf ein
-  beschreibbares Verzeichnis umlenkbar sein.
+**Bewusste Abkehr von einer frueheren Entscheidung:** In Feature 5 wurde das
+Dashboard noch "bewusst ohne CSS-Framework" gebaut, weil ein Framework fuer ein
+einzelnes Feature die Architektur gebrochen haette. Mit diesem Ticket wird das
+Framework fuer die **gesamte** Oberflaeche eingefuehrt; die handgeschriebenen
+Dashboard-Styles (`.kpi-card`, `.bar` usw.) werden dabei ersetzt, nicht
+parallel weitergefuehrt.
 
 ## 2. Akzeptanzkriterien
 
-### Dockerfile
+### Einbindung
 
-- [ ] Es existiert ein `Dockerfile` im Projektwurzelverzeichnis mit **mindestens
-      zwei Stages** (Build-Stage fuer die Abhaengigkeiten, schlanke
-      Runtime-Stage), basierend auf `python:3.12-slim`.
-- [ ] Die Runtime-Stage enthaelt **keine** Build-Toolchain (kein `gcc`, kein
-      `build-essential`); Compiler werden -- falls ueberhaupt noetig -- nur in
-      der Build-Stage installiert.
-- [ ] Das Image legt einen unprivilegierten Benutzer an (nicht `root`, UID != 0)
-      und setzt `USER` auf diesen Benutzer, **bevor** `CMD`/`ENTRYPOINT` greift.
-      `docker run --rm <image> id -u` gibt einen Wert != 0 aus.
-- [ ] Der Anwendungsprozess ist `gunicorn` mit
-      `learning_companion.wsgi:application`; `gunicorn` steht mit Versionsgrenze
-      in `requirements.txt`.
-- [ ] Der Container lauscht auf Port 8000 (`EXPOSE 8000`), gebunden an
-      `0.0.0.0`.
-- [ ] Es sind **keine Secrets** im Image: kein `.env` wird hineinkopiert, kein
-      `DJANGO_SECRET_KEY` und kein `OPENAI_API_KEY` steht als `ENV`- oder
-      `ARG`-Wert im Dockerfile. `docker history --no-trunc <image>` enthaelt
-      keinen Schluesselwert.
-- [ ] `PYTHONDONTWRITEBYTECODE=1` und `PYTHONUNBUFFERED=1` sind gesetzt, damit
-      keine `.pyc`-Dateien ins Image wandern und Logs ungepuffert erscheinen.
+- [ ] `base.html` bindet Bootstrap **5.3.8** (CSS + `bootstrap.bundle.min.js`)
+      und Bootstrap Icons **1.13.1** per jsDelivr-CDN ein.
+- [ ] Alle drei CDN-Ressourcen tragen ein `integrity`-Attribut (SHA-384, aus den
+      tatsaechlich ausgelieferten Dateien berechnet) und `crossorigin="anonymous"`.
+- [ ] Das Bundle-Script wird am Ende von `<body>` geladen und blockiert damit
+      nicht das Rendern.
 
-### Entrypoint
+### Navigation
 
-- [ ] Es existiert ein `entrypoint.sh`, das in dieser Reihenfolge
-      `python manage.py migrate --noinput` und
-      `python manage.py collectstatic --noinput` ausfuehrt und anschliessend per
-      `exec "$@"` an das `CMD` uebergibt -- damit laeuft `gunicorn` als PID 1
-      und empfaengt Signale direkt (sauberes `docker stop`).
-- [ ] Das Script beginnt mit `#!/bin/sh` und `set -e`, bricht also beim ersten
-      Fehler ab, statt mit halb migrierter Datenbank weiterzustarten.
-- [ ] `entrypoint.sh` hat **LF-Zeilenenden** (kein CRLF) und ist im Image
-      ausfuehrbar. Eine `.gitattributes`-Regel haelt die Zeilenenden auch auf
-      Windows-Checkouts stabil; `file entrypoint.sh` bzw. eine Pruefung auf
-      `\r` bleibt ohne Treffer.
+- [ ] Responsive Navbar (`navbar-expand-lg`) mit Toggler; unterhalb von `lg`
+      klappt die Navigation in ein Collapse-Menue.
+- [ ] Fuer angemeldete Nutzer: Links **Dashboard**, **Goals**, **Sessions**.
+      Der Link des aktuellen Bereichs ist hervorgehoben (`.active`) **und**
+      traegt `aria-current="page"`. Zum Bereich "Goals" zaehlen auch
+      Goal-Detail/-Formulare und die Resource-Routen, zu "Sessions" alle
+      Session-Routen.
+- [ ] User-Dropdown rechts mit dem Benutzernamen, darin "Mein Profil",
+      "Profil bearbeiten" und "Logout". Logout bleibt ein **POST**-Formular mit
+      CSRF-Token (Django 5 akzeptiert kein GET-Logout).
+- [ ] Fuer anonyme Nutzer: "Login" und "Registrieren" statt des Dropdowns.
+- [ ] Der bestehende Test `test_navbar_enthaelt_dashboard_link`
+      (`href="/dashboard/"`) bleibt gruen.
 
-### Konfiguration
+### Layout & Komponenten
 
-- [ ] `settings.py` definiert `STATIC_ROOT` (ueber `DJANGO_STATIC_ROOT`
-      konfigurierbar, Default `BASE_DIR / "staticfiles"`), sodass
-      `collectstatic --noinput` fehlerfrei durchlaeuft.
-- [ ] Der SQLite-Pfad ist ueber `DJANGO_DB_PATH` konfigurierbar; der Default
-      bleibt `BASE_DIR / "db.sqlite3"`, damit sich die lokale Entwicklung nicht
-      aendert. Im Container zeigt die Variable auf ein Verzeichnis, das dem
-      unprivilegierten Benutzer gehoert.
-- [ ] Statische Dateien werden bei `DEBUG=False` ausgeliefert (WhiteNoise als
-      Middleware direkt nach `SecurityMiddleware`); ein Aufruf der
-      Admin-Login-Seite im Container liefert CSS mit Status 200 statt 404.
-- [ ] `.env.example` dokumentiert die neuen Variablen `DJANGO_DB_PATH` und
-      `DJANGO_STATIC_ROOT`.
+- [ ] Inhalte liegen in einem `container` mit responsivem vertikalem Spacing;
+      Django-Messages erscheinen als schliessbare Bootstrap-Alerts, wobei der
+      Message-Level `error` auf `alert-danger` abgebildet wird.
+- [ ] **Auth (Login, Registrierung):** zentrierte Card, volle Button-Breite,
+      Formularfelder als `form-control` mit zugeordnetem `<label>`.
+- [ ] **Profil-Ansicht:** Card mit Initialen-Avatar, Name, Cohort und den Focus
+      Areas als Badges; Button "Profil bearbeiten".
+- [ ] **Profil-Bearbeiten, Goal-Formular, Session-Formular:** Formular in einer
+      Card; Mehrfachauswahlen (Focus Areas, Tags) als `<fieldset>` mit
+      `<legend>`, die Checkboxen als anklickbare Chips.
+- [ ] **Dashboard:** drei KPI-Statistikkarten mit Icon; die drei Auswertungen
+      als Tabellen in Cards; die bisherigen CSS-Balken werden durch Bootstrap-
+      `progress`-Balken ersetzt. Die Leerzustands-Texte bleiben **wortgleich**.
+- [ ] **Goals-Liste:** Status-Filter als `form-select` (ID `status` bleibt),
+      Goals als responsives Card-Grid mit farbigem Status-Badge und den
+      Aktions-Buttons Details / Bearbeiten / Loeschen.
+- [ ] **Goal-Detail:** Kopfbereich mit Titel, Status-Badge und Aktionen;
+      Sessions als Tabelle; Ressourcen als List-Group mit Typ-Badge; KI-Bereich
+      als eigene Card.
+- [ ] **Sessions-Liste:** Uebersichtstabelle mit Datum, Lernziel, Dauer und den
+      Tags als Badges. Die Tags werden per `prefetch_related("tags")` geladen,
+      damit die Tabelle keine N+1-Abfragen erzeugt.
+- [ ] **Session-Detail & Loesch-Bestaetigungen:** Card-Layout; destruktive
+      Aktionen als `btn-danger`, Abbrechen als sekundaerer Button.
+- [ ] **Startseite:** Hero-Bereich fuer anonyme Nutzer, Schnellzugriffs-Cards fuer
+      angemeldete Nutzer.
 
-### .dockerignore
+### Formulare
 
-- [ ] Es existiert eine `.dockerignore`, die mindestens `.venv/`, `.git/`,
-      `db.sqlite3`, `__pycache__/`, `*.pyc`, `.env`, `staticfiles/` und
-      `.workflow/` ausschliesst.
-- [ ] Der Build-Context ist dadurch nachweislich klein: der von
-      `docker build` gemeldete Transfer-Umfang liegt deutlich unter der Groesse
-      des Arbeitsverzeichnisses mit `.venv` und `.git`.
+- [ ] Formularfelder werden ueber **ein** wiederverwendbares Partial gerendert,
+      das je nach Widget-Typ `form-control`, `form-select` oder
+      `form-check-input` vergibt -- ohne `forms.py` anzufassen.
+- [ ] Feldfehler stehen direkt unter dem Feld (`invalid-feedback`), das Feld
+      erhaelt `is-invalid` und `aria-invalid="true"`; ueber `aria-describedby`
+      sind Fehlertext und Hilfetext mit dem Feld verknuepft.
+- [ ] Pflichtfelder sind visuell markiert, der Hinweis darauf steht am Formular.
 
-### docker-compose.yml
+### Barrierefreiheit
 
-- [ ] Es existiert eine `docker-compose.yml`, die den Container baut und Port
-      8000 des Hosts auf 8000 des Containers mappt.
-- [ ] Die Konfiguration liest Umgebungsvariablen aus einer optionalen lokalen
-      `.env` (`env_file` mit `required: false`), haelt aber **keine** Secrets im
-      Versionsstand.
-- [ ] Ein benanntes Volume haelt die SQLite-Datenbank, sodass Daten einen
-      `docker compose down`/`up`-Zyklus ueberleben.
-- [ ] `docker compose config` validiert die Datei fehlerfrei.
+- [ ] Skip-Link "Zum Inhalt springen" als erstes fokussierbares Element.
+- [ ] Alle rein dekorativen Icons tragen `aria-hidden="true"`; Buttons, die nur
+      ein Icon zeigen, haben ein `aria-label` bzw. einen `visually-hidden`-Text.
+- [ ] Tabellen haben `<th scope="col">` und eine (ggf. visuell versteckte)
+      `<caption>`.
+- [ ] Progress-Balken tragen `role="progressbar"`, `aria-label` und
+      `aria-valuenow`/`-min`/`-max`.
+- [ ] Links mit `target="_blank"` kuendigen das neue Fenster fuer Screenreader an.
+- [ ] Jede Seite hat genau eine `<h1>`; Status wird nie **nur** ueber Farbe
+      transportiert (Badges enthalten immer den Text).
 
-### GitHub Actions CI
+### Regressionsschutz
 
-- [ ] Es existiert `.github/workflows/ci.yml` mit Triggern auf `push` **und**
-      `pull_request` jeweils fuer den Branch `main`.
-- [ ] Der Workflow richtet Python 3.12 ein (`actions/setup-python`) und nutzt
-      Dependency-Caching (`cache: pip`), damit wiederholte Laeufe die
-      Abhaengigkeiten nicht neu herunterladen.
-- [ ] Der Workflow installiert die Abhaengigkeiten aus `requirements.txt`.
-- [ ] Der Workflow fuehrt aus: einen Linter (`ruff check`), den
-      Django-System-Check (`manage.py check`), eine Migrationspruefung
-      (`makemigrations --check --dry-run`) und die Testsuite
-      (`python manage.py test`).
-- [ ] Der Workflow setzt `permissions: contents: read` und pinnt die verwendeten
-      Actions auf eine Major-Version, statt `@master` zu referenzieren.
-- [ ] Ein zweiter Job baut das Docker-Image (`docker build`), damit ein
-      kaputtes Dockerfile die CI rot faerbt.
-- [ ] Die CI benoetigt **keine** Secrets: ohne `OPENAI_API_KEY` laeuft die
-      Anwendung im Mock-Modus, die Testsuite ist davon unabhaengig.
-
-### Validierung
-
-- [ ] `docker build` laeuft lokal fehlerfrei durch. Docker ist in dieser
-      Umgebung verfuegbar (Version 29.7.2), der Build wird also **real
-      ausgefuehrt** und nicht nur syntaktisch geprueft.
-- [ ] Der gebaute Container startet, fuehrt Migration und `collectstatic` aus
-      und beantwortet einen HTTP-Request auf Port 8000 mit einem gueltigen
-      Status (200 oder ein Redirect), nicht mit einem Fehler.
-- [ ] `ruff check` laeuft ohne Befund ueber den Anwendungscode.
-- [ ] Alle 145 bestehenden Tests laufen weiterhin durch
-      (`python manage.py test`), insbesondere nach der Aenderung an
-      `settings.py`.
+- [ ] Alle **145** bestehenden Tests laufen unveraendert gruen; es wird kein Test
+      angepasst, um ihn gruen zu bekommen.
+- [ ] Keine Aenderung an URLs, Formularfeldern oder Feldnamen; alle bisherigen
+      expliziten HTML-IDs (`status`) und die von Tests gepruefte CSS-Klasse
+      `badge-{typ}` bleiben erhalten.
+- [ ] Die Texte "Fortschrittszusammenfassung" und "Naechste Lernschritte"
+      erscheinen weiterhin **nur**, wenn ein KI-Ergebnis vorliegt
+      (`test_ai_views` prueft deren Abwesenheit).
+- [ ] Neue Tests sichern die Kernpunkte des Redesigns ab: Bootstrap-Einbindung
+      mit SRI, aktiver Nav-Link mit `aria-current`, Logout als POST im Dropdown,
+      Formular-Fehlerdarstellung mit `is-invalid`/`aria-invalid` und die
+      Template-Tags/-Filter.
 
 ## 3. Technische Rahmenbedingungen & Out-of-Scope
 
 **Rahmenbedingungen**
 
-- Basis-Image `python:3.12-slim` passend zur lokal genutzten Python-Version
-  3.12.10; Django 5.2.x, SQLite.
-- `gunicorn` und `whitenoise` werden mit Versionsgrenzen in `requirements.txt`
-  aufgenommen (Stil der bestehenden Eintraege: `>=x,<y`).
-- `ruff` wird als Entwicklungsabhaengigkeit in `requirements-dev.txt` gefuehrt,
-  damit das Laufzeit-Image schlank bleibt und der Linter nicht ins Produktions-
-  Image wandert.
-- Die Aenderungen an `settings.py` bleiben rueckwaertskompatibel: ohne gesetzte
-  Umgebungsvariablen verhaelt sich die lokale Entwicklung exakt wie bisher.
-- Keine Modell-Aenderungen, keine neuen Migrationen.
-- Shell-Script im POSIX-Dialekt (`/bin/sh`), da `slim`-Images keine `bash`
-  garantieren.
+- Bootstrap 5.3.8 und Bootstrap Icons 1.13.1 ausschliesslich per CDN, keine
+  lokale Kopie und kein Build-Schritt (kein npm, kein Sass).
+- Die Formular-Klassen werden ueber einen Template-Filter in
+  `core/templatetags/` vergeben, nicht ueber `widgets`/`attrs` in `forms.py`.
+  Damit erfasst die Loesung auch Django-eigene Formulare wie das
+  `AuthenticationForm` des Logins, ohne die URL-Konfiguration zu aendern.
+- Die einzige Aenderung an Python-Code ausserhalb von `templatetags/` ist das
+  `prefetch_related("tags")` in der Session-Liste.
+- Die bestehende Textkonvention der Templates (Umlaute als `ae`/`oe`/`ue`)
+  bleibt erhalten; mehrere Tests pruefen exakte Texte.
+- Ohne Internetzugang laedt kein Styling; die Anwendung bleibt aber voll
+  funktionsfaehig (reines HTML mit nativen Formularen, Logout als normales
+  POST-Formular).
 
 **Out-of-Scope**
 
-- Kein Wechsel des Datenbank-Backends auf PostgreSQL und kein
-  Datenbank-Service in der Compose-Datei.
-- Kein Reverse Proxy (nginx, Traefik) und kein TLS-Terminierung.
-- Kein Push des Images in eine Registry (GHCR, Docker Hub) und kein
-  Multi-Arch-Build.
-- Kein Deployment-Workflow, keine Staging- oder Produktionsumgebung.
-- Keine Coverage-Messung, kein Test-Matrix-Build ueber mehrere Python-Versionen.
-- Kein Health-Check-Endpunkt in der Anwendung und kein `HEALTHCHECK` mit
-  Anwendungslogik.
-- Kein Container-Security-Scan (Trivy, Snyk) in der CI.
+- Kein Dark-Mode und kein Theme-Umschalter.
+- Kein Austausch der Texte gegen echte Umlaute und keine Internationalisierung.
+- Keine JavaScript-Interaktion ueber Bootstraps eigene Komponenten hinaus
+  (keine Modals fuer Loesch-Bestaetigungen, kein AJAX).
+- Kein Redesign des Django-Admins.
+- Keine eigenen Grafiken, Logos oder Webfonts ueber die Bootstrap Icons hinaus.
+- Keine Aenderungen an Modellen, Formularen, URLs oder Migrationen.

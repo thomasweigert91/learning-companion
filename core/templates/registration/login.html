@@ -3,20 +3,26 @@
 {% block title %}Login &ndash; Learning Companion{% endblock %}
 
 {% block content %}
-    <h1>Login</h1>
+    <div class="row justify-content-center">
+        <div class="col-sm-10 col-md-7 col-lg-5 col-xl-4">
+            <div class="card border-0 shadow-sm">
+                <div class="card-body p-4 p-md-5">
+                    <div class="text-center mb-4">
+                        <span class="lc-icon-circle bg-primary-subtle text-primary-emphasis mb-3"><i class="bi bi-box-arrow-in-right" aria-hidden="true"></i></span>
+                        <h1 class="h3 mb-1">Login</h1>
+                        <p class="text-body-secondary small mb-0">Melde dich mit deinem Konto an.</p>
+                    </div>
 
-    {% if form.errors %}
-        <div class="errors">
-            <p>Benutzername oder Passwort ist falsch.</p>
-            {{ form.errors }}
+                    <form method="post">
+                        {% csrf_token %}
+                        {% include "core/_form.html" with error_intro="Benutzername oder Passwort ist falsch." ohne_pflichtmarkierung=True %}
+                        <button type="submit" class="btn btn-primary w-100 mt-2">Anmelden</button>
+                    </form>
+                </div>
+                <div class="card-footer bg-body-tertiary text-center small py-3">
+                    Noch kein Konto? <a href="{% url 'core:register' %}">Jetzt registrieren</a>
+                </div>
+            </div>
         </div>
-    {% endif %}
-
-    <form method="post">
-        {% csrf_token %}
-        {{ form.as_p }}
-        <button type="submit">Anmelden</button>
-    </form>
-
-    <p>Noch kein Konto? <a href="{% url 'core:register' %}">Jetzt registrieren</a></p>
+    </div>
 {% endblock %}

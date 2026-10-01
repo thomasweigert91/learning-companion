@@ -3,22 +3,56 @@
 {% block title %}Lernsitzungen &ndash; Learning Companion{% endblock %}
 
 {% block content %}
-    <h1>Meine Lernsitzungen</h1>
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+        <h1 class="h2 mb-0">Meine Lernsitzungen</h1>
+        <a class="btn btn-primary" href="{% url 'core:session_create' %}">
+            <i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Neue Lernsitzung
+        </a>
+    </div>
 
     {% if sessions %}
-        <ul>
-            {% for session in sessions %}
-                <li>
-                    <a href="{% url 'core:session_detail' session.pk %}">
-                        {{ session.date|date:"d.m.Y" }}
-                    </a>
-                    &ndash; {{ session.goal.title }} &ndash; {{ session.duration }} Minuten
-                </li>
-            {% endfor %}
-        </ul>
+        <div class="card border-0 shadow-sm">
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <caption class="visually-hidden">Alle Lernsitzungen, neueste zuerst</caption>
+                    <thead class="table-light">
+                        <tr>
+                            <th scope="col" class="ps-3">Datum</th>
+                            <th scope="col">Lernziel</th>
+                            <th scope="col" class="text-end">Dauer</th>
+                            <th scope="col" class="pe-3">Tags</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for session in sessions %}
+                            <tr>
+                                <td class="ps-3 text-nowrap">
+                                    <a href="{% url 'core:session_detail' session.pk %}">
+                                        {{ session.date|date:"d.m.Y" }}
+                                    </a>
+                                </td>
+                                <td>{{ session.goal.title }}</td>
+                                <td class="text-end text-nowrap">{{ session.duration }} Minuten</td>
+                                <td class="pe-3">
+                                    {% for tag in session.tags.all %}
+                                        <span class="badge rounded-pill text-bg-light border">{{ tag.name }}</span>
+                                    {% empty %}
+                                        <span class="text-body-secondary small">&ndash;<span class="visually-hidden">keine Tags</span></span>
+                                    {% endfor %}
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
     {% else %}
-        <p>Noch keine Lernsitzungen erfasst.</p>
+        <div class="card border-0 shadow-sm">
+            <div class="card-body text-center py-5">
+                <i class="bi bi-clock-history display-5 text-body-tertiary" aria-hidden="true"></i>
+                <p class="mt-3 mb-3">Noch keine Lernsitzungen erfasst.</p>
+                <a class="btn btn-primary" href="{% url 'core:session_create' %}">Erste Lernsitzung erfassen</a>
+            </div>
+        </div>
     {% endif %}
-
-    <a href="{% url 'core:session_create' %}">Neue Lernsitzung</a>
 {% endblock %}

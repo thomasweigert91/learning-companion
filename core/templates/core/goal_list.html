@@ -3,36 +3,82 @@
 {% block title %}Lernziele &ndash; Learning Companion{% endblock %}
 
 {% block content %}
-    <h1>Meine Lernziele</h1>
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+        <h1 class="h2 mb-0">Meine Lernziele</h1>
+        <a class="btn btn-primary" href="{% url 'core:goal_create' %}">
+            <i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Neues Lernziel
+        </a>
+    </div>
 
-    <form method="get">
-        <label for="status">Status</label>
-        <select name="status" id="status">
-            <option value="">Alle</option>
-            {% for wert, bezeichnung in status_choices %}
-                <option value="{{ wert }}" {% if wert == aktiver_status %}selected{% endif %}>
-                    {{ bezeichnung }}
-                </option>
-            {% endfor %}
-        </select>
-        <button type="submit">Filtern</button>
-        {% if aktiver_status %}
-            <a href="{% url 'core:goal_list' %}">Filter zuruecksetzen</a>
-        {% endif %}
+    <form method="get" class="card border-0 shadow-sm mb-4">
+        <div class="card-body row g-2 align-items-end">
+            <div class="col-sm-6 col-md-4 col-lg-3">
+                <label class="form-label small text-body-secondary mb-1" for="status">Status</label>
+                <select class="form-select" name="status" id="status">
+                    <option value="">Alle</option>
+                    {% for wert, bezeichnung in status_choices %}
+                        <option value="{{ wert }}" {% if wert == aktiver_status %}selected{% endif %}>
+                            {{ bezeichnung }}
+                        </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-auto">
+                <button type="submit" class="btn btn-outline-primary">
+                    <i class="bi bi-funnel me-1" aria-hidden="true"></i>Filtern
+                </button>
+            </div>
+            {% if aktiver_status %}
+                <div class="col-auto">
+                    <a class="btn btn-link" href="{% url 'core:goal_list' %}">Filter zuruecksetzen</a>
+                </div>
+            {% endif %}
+        </div>
     </form>
 
     {% if goals %}
-        <ul>
+        <div class="row row-cols-1 row-cols-md-2 row-cols-xl-3 g-3">
             {% for goal in goals %}
-                <li>
-                    <a href="{% url 'core:goal_detail' goal.pk %}">{{ goal.title }}</a>
-                    &ndash; {{ goal.get_status_display }}
-                </li>
+                <div class="col">
+                    <article class="card h-100 border-0 shadow-sm lc-lift">
+                        <div class="card-body">
+                            <div class="mb-2">
+                                {% include "core/_status_badge.html" with status=goal.status label=goal.get_status_display %}
+                            </div>
+                            <h2 class="h5 card-title">
+                                <a class="link-body-emphasis text-decoration-none" href="{% url 'core:goal_detail' goal.pk %}">{{ goal.title }}</a>
+                            </h2>
+                            <p class="card-text text-body-secondary small mb-0">
+                                {{ goal.description|default:"Keine Beschreibung."|truncatewords:22 }}
+                            </p>
+                        </div>
+                        <div class="card-footer bg-body border-0 pt-0 pb-3 d-flex flex-wrap align-items-center gap-2">
+                            <span class="small text-body-secondary me-auto">
+                                <i class="bi bi-clock me-1" aria-hidden="true"></i>{{ goal.updated_at|date:"d.m.Y" }}
+                            </span>
+                            <a class="btn btn-sm btn-outline-primary" href="{% url 'core:goal_detail' goal.pk %}">
+                                Details<span class="visually-hidden"> zu {{ goal.title }}</span>
+                            </a>
+                            <a class="btn btn-sm btn-outline-secondary" href="{% url 'core:goal_edit' goal.pk %}"
+                               aria-label="{{ goal.title }} bearbeiten" title="Bearbeiten">
+                                <i class="bi bi-pencil" aria-hidden="true"></i>
+                            </a>
+                            <a class="btn btn-sm btn-outline-danger" href="{% url 'core:goal_delete' goal.pk %}"
+                               aria-label="{{ goal.title }} loeschen" title="Loeschen">
+                                <i class="bi bi-trash3" aria-hidden="true"></i>
+                            </a>
+                        </div>
+                    </article>
+                </div>
             {% endfor %}
-        </ul>
+        </div>
     {% else %}
-        <p>Keine Lernziele gefunden.</p>
+        <div class="card border-0 shadow-sm">
+            <div class="card-body text-center py-5">
+                <i class="bi bi-bullseye display-5 text-body-tertiary" aria-hidden="true"></i>
+                <p class="mt-3 mb-3">Keine Lernziele gefunden.</p>
+                <a class="btn btn-primary" href="{% url 'core:goal_create' %}">Erstes Lernziel anlegen</a>
+            </div>
+        </div>
     {% endif %}
-
-    <a href="{% url 'core:goal_create' %}">Neues Lernziel</a>
 {% endblock %}

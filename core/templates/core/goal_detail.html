@@ -3,86 +3,144 @@
 {% block title %}{{ goal.title }} &ndash; Learning Companion{% endblock %}
 
 {% block content %}
-    <h1>{{ goal.title }}</h1>
+    <nav aria-label="Brotkruemelnavigation" class="mb-2">
+        <ol class="breadcrumb small mb-0">
+            <li class="breadcrumb-item"><a href="{% url 'core:goal_list' %}">Lernziele</a></li>
+            <li class="breadcrumb-item active" aria-current="page">{{ goal.title }}</li>
+        </ol>
+    </nav>
 
-    <dl>
-        <dt>Status</dt>
-        <dd>{{ goal.get_status_display }}</dd>
-
-        <dt>Beschreibung</dt>
-        <dd>{{ goal.description|default:"(keine Beschreibung)" }}</dd>
-
-        <dt>Angelegt</dt>
-        <dd>{{ goal.created_at|date:"d.m.Y H:i" }}</dd>
-
-        <dt>Zuletzt geaendert</dt>
-        <dd>{{ goal.updated_at|date:"d.m.Y H:i" }}</dd>
-    </dl>
-
-    <h2>Lernsitzungen</h2>
-    {% if goal.sessions.all %}
-        <ul>
-            {% for session in goal.sessions.all %}
-                <li>
-                    <a href="{% url 'core:session_detail' session.pk %}">
-                        {{ session.date|date:"d.m.Y" }}
-                    </a>
-                    &ndash; {{ session.duration }} Minuten
-                </li>
-            {% endfor %}
-        </ul>
-    {% else %}
-        <p>Noch keine Lernsitzungen zu diesem Ziel.</p>
-    {% endif %}
-
-    <h2>KI-Unterstuetzung</h2>
-    <form action="{% url 'core:goal_ai_summary' goal.pk %}" method="post">
-        {% csrf_token %}
-        <button type="submit">Zusammenfassung generieren</button>
-    </form>
-    <form action="{% url 'core:goal_ai_next_steps' goal.pk %}" method="post">
-        {% csrf_token %}
-        <button type="submit">Naechste Schritte vorschlagen</button>
-    </form>
-
-    {# Ergebnisbereiche erscheinen erst nach der ersten Nutzung. #}
-    {% if ai_summary %}
-        <section class="ai-summary">
-            <h3>Fortschrittszusammenfassung</h3>
-            <p>{{ ai_summary|linebreaksbr }}</p>
-        </section>
-    {% endif %}
-
-    {% if ai_next_steps %}
-        <section class="ai-next-steps">
-            <h3>Naechste Lernschritte</h3>
-            <ol>
-                {% for schritt in ai_next_steps %}
-                    <li>{{ schritt }}</li>
-                {% endfor %}
-            </ol>
-        </section>
-    {% endif %}
-
-    <h2>Ressourcen</h2>
-    {% include "core/_resource_list.html" %}
-
-    <h3>Ressource hinzufuegen</h3>
-    {% if resource_form.errors %}
-        <div class="errors">
-            <p>Bitte korrigiere die folgenden Eingaben:</p>
-            {{ resource_form.errors }}
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+        <div>
+            <h1 class="h2 mb-2">{{ goal.title }}</h1>
+            {% include "core/_status_badge.html" with status=goal.status label=goal.get_status_display %}
         </div>
-    {% endif %}
-    <form action="{% url 'core:resource_create' goal.pk %}" method="post">
-        {% csrf_token %}
-        {{ resource_form.as_p }}
-        <button type="submit">Anhaengen</button>
-    </form>
+        <div class="d-flex flex-wrap gap-2">
+            <a class="btn btn-outline-secondary" href="{% url 'core:goal_edit' goal.pk %}">
+                <i class="bi bi-pencil me-1" aria-hidden="true"></i>Bearbeiten
+            </a>
+            <a class="btn btn-outline-danger" href="{% url 'core:goal_delete' goal.pk %}">
+                <i class="bi bi-trash3 me-1" aria-hidden="true"></i>Loeschen
+            </a>
+            <a class="btn btn-link" href="{% url 'core:goal_list' %}">Zurueck zur Liste</a>
+        </div>
+    </div>
 
-    <p>
-        <a href="{% url 'core:goal_edit' goal.pk %}">Bearbeiten</a>
-        <a href="{% url 'core:goal_delete' goal.pk %}">Loeschen</a>
-        <a href="{% url 'core:goal_list' %}">Zurueck zur Liste</a>
-    </p>
+    <div class="row g-4">
+        <div class="col-lg-8 d-grid gap-4 align-content-start">
+
+            {# --- Details ---------------------------------------------------- #}
+            <section class="card border-0 shadow-sm" aria-labelledby="titel-details">
+                <div class="card-body">
+                    <h2 class="h5" id="titel-details">Beschreibung</h2>
+                    <p class="mb-3">{{ goal.description|default:"(keine Beschreibung)"|linebreaksbr }}</p>
+                    <dl class="row small text-body-secondary mb-0">
+                        <dt class="col-sm-4 fw-normal">Angelegt</dt>
+                        <dd class="col-sm-8 mb-1">{{ goal.created_at|date:"d.m.Y H:i" }}</dd>
+                        <dt class="col-sm-4 fw-normal">Zuletzt geaendert</dt>
+                        <dd class="col-sm-8 mb-0">{{ goal.updated_at|date:"d.m.Y H:i" }}</dd>
+                    </dl>
+                </div>
+            </section>
+
+            {# --- Lernsitzungen ---------------------------------------------- #}
+            <section class="card border-0 shadow-sm" aria-labelledby="titel-sessions">
+                <div class="card-header bg-body d-flex justify-content-between align-items-center py-3">
+                    <h2 class="h5 mb-0" id="titel-sessions"><i class="bi bi-clock-history me-2 text-primary" aria-hidden="true"></i>Lernsitzungen</h2>
+                    <a class="btn btn-sm btn-outline-primary" href="{% url 'core:session_create' %}">
+                        <i class="bi bi-plus-lg" aria-hidden="true"></i> Erfassen
+                    </a>
+                </div>
+                {% if goal.sessions.all %}
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle mb-0">
+                            <caption class="visually-hidden">Lernsitzungen zu diesem Lernziel</caption>
+                            <thead>
+                                <tr>
+                                    <th scope="col" class="ps-3">Datum</th>
+                                    <th scope="col" class="text-end pe-3">Dauer</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for session in goal.sessions.all %}
+                                    <tr>
+                                        <td class="ps-3">
+                                            <a href="{% url 'core:session_detail' session.pk %}">
+                                                {{ session.date|date:"d.m.Y" }}
+                                            </a>
+                                        </td>
+                                        <td class="text-end pe-3">{{ session.duration }} Minuten</td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="card-body">
+                        <p class="text-body-secondary mb-0">Noch keine Lernsitzungen zu diesem Ziel.</p>
+                    </div>
+                {% endif %}
+            </section>
+
+            {# --- Ressourcen ------------------------------------------------- #}
+            <section class="card border-0 shadow-sm" aria-labelledby="titel-ressourcen">
+                <div class="card-header bg-body py-3">
+                    <h2 class="h5 mb-0" id="titel-ressourcen"><i class="bi bi-bookmarks me-2 text-primary" aria-hidden="true"></i>Ressourcen</h2>
+                </div>
+                {% include "core/_resource_list.html" %}
+                <div class="card-body border-top">
+                    <h3 class="h6 mb-3">Ressource hinzufuegen</h3>
+                    <form action="{% url 'core:resource_create' goal.pk %}" method="post">
+                        {% csrf_token %}
+                        {% include "core/_form.html" with form=resource_form %}
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-paperclip me-1" aria-hidden="true"></i>Anhaengen
+                        </button>
+                    </form>
+                </div>
+            </section>
+        </div>
+
+        {# --- KI-Unterstuetzung ---------------------------------------------- #}
+        <div class="col-lg-4">
+            <section class="card border-0 shadow-sm" aria-labelledby="titel-ki">
+                <div class="card-header bg-body py-3">
+                    <h2 class="h5 mb-0" id="titel-ki"><i class="bi bi-stars me-2 text-warning" aria-hidden="true"></i>KI-Unterstuetzung</h2>
+                </div>
+                <div class="card-body d-grid gap-2">
+                    <form action="{% url 'core:goal_ai_summary' goal.pk %}" method="post" class="d-grid">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-outline-primary">
+                            <i class="bi bi-card-text me-1" aria-hidden="true"></i>Zusammenfassung generieren
+                        </button>
+                    </form>
+                    <form action="{% url 'core:goal_ai_next_steps' goal.pk %}" method="post" class="d-grid">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-outline-primary">
+                            <i class="bi bi-signpost-2 me-1" aria-hidden="true"></i>Naechste Schritte vorschlagen
+                        </button>
+                    </form>
+                </div>
+
+                {# Ergebnisbereiche erscheinen erst nach der ersten Nutzung. #}
+                {% if ai_summary %}
+                    <div class="card-body border-top ai-summary">
+                        <h3 class="h6"><i class="bi bi-card-text me-1 text-primary" aria-hidden="true"></i>Fortschrittszusammenfassung</h3>
+                        <p class="small mb-0">{{ ai_summary|linebreaksbr }}</p>
+                    </div>
+                {% endif %}
+
+                {% if ai_next_steps %}
+                    <div class="card-body border-top ai-next-steps">
+                        <h3 class="h6"><i class="bi bi-signpost-2 me-1 text-primary" aria-hidden="true"></i>Naechste Lernschritte</h3>
+                        <ol class="small ps-3 mb-0">
+                            {% for schritt in ai_next_steps %}
+                                <li class="mb-1">{{ schritt }}</li>
+                            {% endfor %}
+                        </ol>
+                    </div>
+                {% endif %}
+            </section>
+        </div>
+    </div>
 {% endblock %}

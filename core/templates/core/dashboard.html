@@ -3,96 +3,175 @@
 {% block title %}Dashboard &ndash; Learning Companion{% endblock %}
 
 {% block content %}
-    <h1>Dashboard</h1>
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+        <div>
+            <h1 class="h2 mb-1">Dashboard</h1>
+            <p class="text-body-secondary mb-0">Deine Lernaktivitaet im Ueberblick</p>
+        </div>
+        <a class="btn btn-primary" href="{% url 'core:session_create' %}">
+            <i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Lernsitzung erfassen
+        </a>
+    </div>
 
-    <div class="kpi-row">
-        <div class="kpi-card">
-            <span class="kpi-wert">{{ goals_gesamt }}</span>
-            <span class="kpi-label">Lernziele</span>
+    {# --- KPI-Kacheln -------------------------------------------------------- #}
+    <div class="row row-cols-1 row-cols-md-3 g-3 mb-4">
+        <div class="col">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body d-flex align-items-center gap-3">
+                    <span class="lc-icon-circle bg-primary-subtle text-primary-emphasis"><i class="bi bi-bullseye" aria-hidden="true"></i></span>
+                    <div>
+                        <p class="display-6 fw-semibold mb-0 lh-1">{{ goals_gesamt }}</p>
+                        <p class="text-body-secondary small mb-0 mt-1">Lernziele</p>
+                    </div>
+                </div>
+            </div>
         </div>
-        <div class="kpi-card">
-            <span class="kpi-wert">{{ sessions_gesamt }}</span>
-            <span class="kpi-label">Lernsitzungen</span>
+        <div class="col">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body d-flex align-items-center gap-3">
+                    <span class="lc-icon-circle bg-success-subtle text-success-emphasis"><i class="bi bi-journal-check" aria-hidden="true"></i></span>
+                    <div>
+                        <p class="display-6 fw-semibold mb-0 lh-1">{{ sessions_gesamt }}</p>
+                        <p class="text-body-secondary small mb-0 mt-1">Lernsitzungen</p>
+                    </div>
+                </div>
+            </div>
         </div>
-        <div class="kpi-card">
-            <span class="kpi-wert">{{ minuten_gesamt }}</span>
-            <span class="kpi-label">Minuten Lernzeit</span>
+        <div class="col">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body d-flex align-items-center gap-3">
+                    <span class="lc-icon-circle bg-warning-subtle text-warning-emphasis"><i class="bi bi-hourglass-split" aria-hidden="true"></i></span>
+                    <div>
+                        <p class="display-6 fw-semibold mb-0 lh-1">{{ minuten_gesamt }}</p>
+                        <p class="text-body-secondary small mb-0 mt-1">Minuten Lernzeit</p>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
-    <h2>Lernziele nach Status</h2>
-    {% if goals_gesamt %}
-        <table class="dashboard-table">
-            <thead>
-                <tr><th>Status</th><th>Anzahl</th><th>Verteilung</th></tr>
-            </thead>
-            <tbody>
-                {% for zeile in goals_nach_status %}
-                    <tr>
-                        <td>{{ zeile.label }}</td>
-                        <td class="zahl">{{ zeile.anzahl }}</td>
-                        <td>
-                            {# max_status_anzahl ist hier garantiert > 0. #}
-                            <div class="bar-track">
-                                <div class="bar"
-                                     style="width: {% widthratio zeile.anzahl max_status_anzahl 100 %}%"></div>
-                            </div>
-                        </td>
-                    </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    {% else %}
-        <p>Noch keine Lernziele angelegt.</p>
-    {% endif %}
+    <div class="row g-4">
+        {# --- Ziele nach Status --------------------------------------------- #}
+        <div class="col-lg-5">
+            <section class="card h-100 border-0 shadow-sm" aria-labelledby="titel-status">
+                <div class="card-header bg-body py-3">
+                    <h2 class="h5 mb-0" id="titel-status"><i class="bi bi-pie-chart me-2 text-primary" aria-hidden="true"></i>Lernziele nach Status</h2>
+                </div>
+                <div class="card-body">
+                    {% if goals_gesamt %}
+                        <table class="table align-middle mb-0">
+                            <caption class="visually-hidden">Anzahl der Lernziele je Status</caption>
+                            <thead>
+                                <tr>
+                                    <th scope="col">Status</th>
+                                    <th scope="col" class="text-end">Anzahl</th>
+                                    <th scope="col" class="w-50">Verteilung</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for zeile in goals_nach_status %}
+                                    {# max_status_anzahl ist hier garantiert > 0. #}
+                                    {% widthratio zeile.anzahl max_status_anzahl 100 as prozent %}
+                                    <tr>
+                                        <td>{% include "core/_status_badge.html" with status=zeile.status label=zeile.label %}</td>
+                                        <td class="text-end fw-semibold">{{ zeile.anzahl }}</td>
+                                        <td>
+                                            <div class="progress" role="progressbar" aria-label="{{ zeile.label }}: {{ zeile.anzahl }}"
+                                                 aria-valuenow="{{ prozent }}" aria-valuemin="0" aria-valuemax="100" style="height: .6rem">
+                                                <div class="progress-bar{% if zeile.status == 'done' %} bg-success{% elif zeile.status == 'planned' %} bg-secondary{% endif %}" style="width: {{ prozent }}%"></div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    {% else %}
+                        <p class="text-body-secondary mb-0">Noch keine Lernziele angelegt.</p>
+                    {% endif %}
+                </div>
+            </section>
+        </div>
 
-    <h2>Lernzeit je Kategorie</h2>
-    {% if max_tag_minuten %}
-        <table class="dashboard-table">
-            <thead>
-                <tr><th>Kategorie</th><th>Minuten</th><th>Anteil</th></tr>
-            </thead>
-            <tbody>
-                {% for zeile in zeit_je_tag %}
-                    <tr>
-                        <td>{{ zeile.tags__name }}</td>
-                        <td class="zahl">{{ zeile.minuten }}</td>
-                        <td>
-                            <div class="bar-track">
-                                <div class="bar"
-                                     style="width: {% widthratio zeile.minuten max_tag_minuten 100 %}%"></div>
-                            </div>
-                        </td>
-                    </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    {% else %}
-        <p>Noch keine Lernsitzungen mit Kategorie erfasst.</p>
-    {% endif %}
+        {# --- Lernzeit je Kategorie ------------------------------------------ #}
+        <div class="col-lg-7">
+            <section class="card h-100 border-0 shadow-sm" aria-labelledby="titel-kategorie">
+                <div class="card-header bg-body py-3">
+                    <h2 class="h5 mb-0" id="titel-kategorie"><i class="bi bi-tags me-2 text-success" aria-hidden="true"></i>Lernzeit je Kategorie</h2>
+                </div>
+                <div class="card-body">
+                    {% if max_tag_minuten %}
+                        <table class="table align-middle mb-0">
+                            <caption class="visually-hidden">Lernminuten je Tag-Kategorie, absteigend sortiert</caption>
+                            <thead>
+                                <tr>
+                                    <th scope="col">Kategorie</th>
+                                    <th scope="col" class="text-end">Minuten</th>
+                                    <th scope="col" class="w-50">Anteil</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for zeile in zeit_je_tag %}
+                                    {% widthratio zeile.minuten max_tag_minuten 100 as prozent %}
+                                    <tr>
+                                        <td><span class="badge rounded-pill text-bg-light border"><i class="bi bi-tag me-1" aria-hidden="true"></i>{{ zeile.tags__name }}</span></td>
+                                        <td class="text-end fw-semibold">{{ zeile.minuten }}</td>
+                                        <td>
+                                            <div class="progress" role="progressbar" aria-label="{{ zeile.tags__name }}: {{ zeile.minuten }} Minuten"
+                                                 aria-valuenow="{{ prozent }}" aria-valuemin="0" aria-valuemax="100" style="height: .6rem">
+                                                <div class="progress-bar bg-success" style="width: {{ prozent }}%"></div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    {% else %}
+                        <p class="text-body-secondary mb-0">Noch keine Lernsitzungen mit Kategorie erfasst.</p>
+                    {% endif %}
+                </div>
+            </section>
+        </div>
 
-    <h2>Lernzeit je Kalenderwoche</h2>
-    {% if max_wochen_minuten %}
-        <table class="dashboard-table">
-            <thead>
-                <tr><th>Woche ab</th><th>Minuten</th><th>Verlauf</th></tr>
-            </thead>
-            <tbody>
-                {% for zeile in zeit_je_woche %}
-                    <tr>
-                        <td>{{ zeile.woche|date:"d.m.Y" }}</td>
-                        <td class="zahl">{{ zeile.minuten }}</td>
-                        <td>
-                            <div class="bar-track">
-                                <div class="bar"
-                                     style="width: {% widthratio zeile.minuten max_wochen_minuten 100 %}%"></div>
-                            </div>
-                        </td>
-                    </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    {% else %}
-        <p>Noch keine Lernsitzungen erfasst.</p>
-    {% endif %}
+        {# --- Lernzeit je Kalenderwoche --------------------------------------- #}
+        <div class="col-12">
+            <section class="card border-0 shadow-sm" aria-labelledby="titel-woche">
+                <div class="card-header bg-body py-3">
+                    <h2 class="h5 mb-0" id="titel-woche"><i class="bi bi-calendar-week me-2 text-warning" aria-hidden="true"></i>Lernzeit je Kalenderwoche</h2>
+                </div>
+                <div class="card-body">
+                    {% if max_wochen_minuten %}
+                        <div class="table-responsive">
+                            <table class="table table-hover align-middle mb-0">
+                                <caption class="visually-hidden">Lernminuten je Kalenderwoche, aufsteigend nach Wochenbeginn</caption>
+                                <thead>
+                                    <tr>
+                                        <th scope="col">Woche ab</th>
+                                        <th scope="col" class="text-end">Minuten</th>
+                                        <th scope="col" class="w-50">Verlauf</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for zeile in zeit_je_woche %}
+                                        {% widthratio zeile.minuten max_wochen_minuten 100 as prozent %}
+                                        <tr>
+                                            <td class="text-nowrap">{{ zeile.woche|date:"d.m.Y" }}</td>
+                                            <td class="text-end fw-semibold">{{ zeile.minuten }}</td>
+                                            <td>
+                                                <div class="progress" role="progressbar" aria-label="Woche ab {{ zeile.woche|date:'d.m.Y' }}: {{ zeile.minuten }} Minuten"
+                                                     aria-valuenow="{{ prozent }}" aria-valuemin="0" aria-valuemax="100" style="height: .6rem">
+                                                    <div class="progress-bar bg-warning" style="width: {{ prozent }}%"></div>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% else %}
+                        <p class="text-body-secondary mb-0">Noch keine Lernsitzungen erfasst.</p>
+                    {% endif %}
+                </div>
+            </section>
+        </div>
+    </div>
 {% endblock %}

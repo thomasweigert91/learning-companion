@@ -202,6 +202,11 @@ class SessionListView(OwnSessionMixin, ListView):
     template_name = "core/learningsession_list.html"
     context_object_name = "sessions"
 
+    def get_queryset(self):
+        # Die Tabelle zeigt die Tags jeder Session; ohne Prefetch kostete das
+        # eine Abfrage pro Zeile.
+        return super().get_queryset().prefetch_related("tags")
+
 
 class SessionDetailView(OwnSessionMixin, DetailView):
     template_name = "core/learningsession_detail.html"

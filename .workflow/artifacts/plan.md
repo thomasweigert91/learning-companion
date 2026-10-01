@@ -1,202 +1,194 @@
-# Implementierungs-Plan: Containerisierung und Continuous Integration
+# Implementierungs-Plan: UI- und Styling-Upgrade auf Bootstrap 5
 
 ## 1. Betroffene Dateien
 
-- Neu: `Dockerfile`
-- Neu: `.dockerignore`
-- Neu: `entrypoint.sh`
-- Neu: `docker-compose.yml`
-- Neu: `.github/workflows/ci.yml`
-- Neu: `requirements-dev.txt`
-- Neu: `pyproject.toml` (nur `[tool.ruff]`-Konfiguration)
-- Ändern: `requirements.txt` (`gunicorn`, `whitenoise`)
-- Ändern: `learning_companion/settings.py` (`STATIC_ROOT`, `DJANGO_DB_PATH`, WhiteNoise)
-- Ändern: `.env.example` (neue Variablen dokumentieren)
-- Ändern: `.gitattributes` (LF für `entrypoint.sh` erzwingen)
+**Neu**
+
+- Neu: `core/templatetags/__init__.py`
+- Neu: `core/templatetags/ui.py` (Filter `bs_widget`, `has_required`, Inclusion-Tag `nav_link`)
+- Neu: `core/templates/core/_form.html` (generisches Formular-Partial)
+- Neu: `core/templates/core/_nav_link.html` (Template des Nav-Link-Tags)
+- Neu: `core/templates/core/_status_badge.html` (Status → Badge-Farbe)
+- Neu: `core/templates/core/_home_card.html` (Schnellzugriffs-Card der Startseite)
+- Neu: `core/tests/test_ui.py`
+
+**Ändern**
+
+- Ändern: `core/templates/base.html` (CDN, Navbar, Dropdown, Alerts, Skip-Link; Alt-CSS entfernen)
+- Ändern: `core/templates/core/home.html`
+- Ändern: `core/templates/registration/login.html`
+- Ändern: `core/templates/registration/register.html`
+- Ändern: `core/templates/core/profile_detail.html`
+- Ändern: `core/templates/core/profile_form.html`
+- Ändern: `core/templates/core/dashboard.html`
+- Ändern: `core/templates/core/goal_list.html`
+- Ändern: `core/templates/core/goal_detail.html`
+- Ändern: `core/templates/core/goal_form.html`
+- Ändern: `core/templates/core/goal_confirm_delete.html`
+- Ändern: `core/templates/core/_resource_list.html`
+- Ändern: `core/templates/core/resource_confirm_delete.html`
+- Ändern: `core/templates/core/learningsession_list.html`
+- Ändern: `core/templates/core/learningsession_detail.html`
+- Ändern: `core/templates/core/learningsession_form.html`
+- Ändern: `core/templates/core/learningsession_confirm_delete.html`
+- Ändern: `core/views.py` (nur `SessionListView.get_queryset`: `prefetch_related("tags")`)
+- Ändern: `requirements.txt` (Django-Pin `>=5.2`, siehe Schritt 1)
+
+Damit sind **alle 17** bestehenden Templates erfasst.
 
 ## 2. Datenmodelle & Migrationen
 
-**Keine.** Das Feature ist reine Infrastruktur: kein Modell, kein Feld, keine
-Migration. `python manage.py makemigrations --check --dry-run` muss unverändert
-"No changes detected" melden -- die CI prüft das künftig bei jedem Lauf.
+**Keine.** Modelle, Formulare (`forms.py`) und URLs bleiben unverändert; es
+entsteht keine Migration. `makemigrations --check --dry-run` muss weiterhin
+"No changes detected" melden.
 
-Die einzigen Änderungen an `settings.py` betreffen Konfiguration, nicht Schema:
+**Vom Redesign unberührte Verträge** (Grundlage der Regressionsfreiheit):
 
-| Einstellung | Heute | Künftig | Rückwärtskompatibel? |
-|---|---|---|---|
-| `STATIC_ROOT` | nicht gesetzt → `collectstatic` bricht ab | `os.environ.get("DJANGO_STATIC_ROOT", BASE_DIR / "staticfiles")` | ja, neu und additiv |
-| `DATABASES.default.NAME` | fest `BASE_DIR / "db.sqlite3"` | `os.environ.get("DJANGO_DB_PATH", BASE_DIR / "db.sqlite3")` | ja, Default identisch |
-| `MIDDLEWARE` | ohne WhiteNoise | WhiteNoise direkt nach `SecurityMiddleware` | ja, bei `DEBUG=True` unauffällig |
-
-`staticfiles/` ist in `.gitignore` bereits als `/staticfiles/` ausgeschlossen --
-der `collectstatic`-Output landet also nicht im Versionsstand.
+| Vertrag | Wo geprüft | Wie gesichert |
+|---|---|---|
+| Feld-IDs `id_<feld>` und Feldnamen | Auth-, Goal-, Session-, Resource-Tests (POSTs) | Widgets werden weiter von Django gerendert (`BoundField.as_widget`), nur `class`/ARIA-Attribute kommen hinzu |
+| `id="status"` im Goal-Filter | Filter-Tests per GET-Parameter | ID unverändert übernommen |
+| CSS-Klasse `badge-{typ}` | `test_resource_badge_class_matches_type` | bleibt als Zusatzklasse neben `badge` |
+| `href="/dashboard/"` in der Navbar | `test_navbar_enthaelt_dashboard_link` | `nav_link`-Tag rendert `reverse()`-Ergebnis |
+| "Fortschrittszusammenfassung" / "Naechste Lernschritte" nur mit Ergebnis | `test_ai_views` (Abwesenheit) | Wörter erscheinen ausschließlich in den `{% if %}`-Blöcken, nicht in Buttons oder Hilfetexten |
+| Leerzustands-Texte Dashboard, Ressourcen | `test_dashboard`, `test_resources` | wortgleich übernommen |
 
 ## 3. Schrittweise Umsetzung
 
-- [ ] **Schritt 1: Abhängigkeiten und Settings** --
-      `requirements.txt` um `gunicorn>=23.0,<24.0` und `whitenoise>=6.7,<7.0`
-      ergänzen (Stil der Bestandszeilen: `>=x,<y`). Neu: `requirements-dev.txt`
-      mit `-r requirements.txt` und `ruff>=0.6,<1.0` -- der Linter bleibt damit
-      aus dem Laufzeit-Image heraus.
+- [ ] **Schritt 1: Setup -- Template-Tags** (`core/templatetags/ui.py`)
 
-      In `settings.py`:
       ```python
-      DATABASES = {
-          "default": {
-              "ENGINE": "django.db.backends.sqlite3",
-              "NAME": os.environ.get("DJANGO_DB_PATH", BASE_DIR / "db.sqlite3"),
-          }
-      }
-
-      STATIC_URL = "static/"
-      STATIC_ROOT = os.environ.get("DJANGO_STATIC_ROOT", BASE_DIR / "staticfiles")
-      STORAGES = {
-          "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
-          "staticfiles": {
-              "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"
-          },
-      }
+      @register.filter
+      def bs_widget(bound_field):
+          """Rendert das Widget mit Bootstrap-Klasse und ARIA-Verknüpfungen."""
       ```
-      WhiteNoise als `"whitenoise.middleware.WhiteNoiseMiddleware"` direkt nach
-      `SecurityMiddleware` einhängen -- die von WhiteNoise dokumentierte
-      Position.
+      - Klasse nach `bound_field.widget_type`:
+        `checkbox`/`checkboxselectmultiple`/`radioselect` → `form-check-input`,
+        `select`/`selectmultiple`/`nullbooleanselect` → `form-select`,
+        sonst `form-control`. Vorhandene Klassen aus `widget.attrs` bleiben erhalten.
+      - Bei Fehlern zusätzlich `is-invalid`.
+      - `aria-invalid` und `aria-describedby` erzeugt **Django 5.2 selbst**
+        (`BoundField.aria_describedby`) nach der Konvention `<auto_id>_helptext`
+        und `<auto_id>_error`. Der Filter dupliziert das nicht; `_form.html`
+        vergibt an Hilfe- und Fehlertext genau diese IDs. Weil das erst ab 5.2
+        gilt (5.0/5.1 verknüpfen nur den Hilfetext), wird der Pin in
+        `requirements.txt` von `Django>=5.0` auf `Django>=5.2` angehoben --
+        installiert ist bereits 5.2.17 (LTS).
+      - Rückgabe über `bound_field.as_widget(attrs=...)` -- ID, Name, Wert und
+        `required` kommen damit unverändert von Django.
 
-      `pyproject.toml` mit einer minimalen `[tool.ruff]`-Sektion anlegen
-      (`line-length = 100`, Migrations und `.venv` ausgeschlossen), damit lokal
-      und in der CI derselbe Regelsatz greift.
+      `has_required(form)` → `True`, wenn ein sichtbares Feld Pflicht ist (steuert
+      den Pflichtfeld-Hinweis).
 
-- [ ] **Schritt 2: Dockerfile (Multi-Stage)** --
+      `nav_link(context, url_name, label, icon, section)` als Inclusion-Tag:
+      ermittelt aus `request.resolver_match.url_name` den aktiven Bereich
+      (`dashboard`; `goal*`/`resource*` → `goals`; `session*` → `sessions`;
+      `profile*` → `profile`) und rendert `core/_nav_link.html` mit `active` +
+      `aria-current="page"` für den passenden Link.
 
-      *Stage `builder`* auf `python:3.12-slim`: `requirements.txt` kopieren und
-      `pip wheel --wheel-dir /wheels -r requirements.txt` ausführen. Die Wheels
-      sind das einzige, was in die Runtime-Stage übernommen wird -- pip-Cache,
-      Quell-Archive und eine eventuelle Toolchain bleiben zurück.
+- [ ] **Schritt 2: Partials**
 
-      *Stage `runtime`* auf `python:3.12-slim`:
-      - `ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1`
-      - Benutzer anlegen: `groupadd --system --gid 1000 app` +
-        `useradd --system --uid 1000 --gid app --no-create-home app`
-      - `--from=builder /wheels` kopieren, daraus
-        `pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt`,
-        danach `rm -rf /wheels`
-      - Anwendungscode nach `/app` kopieren, `entrypoint.sh` nach
-        `/usr/local/bin/entrypoint.sh` mit `chmod +x`
-      - `/data` als Verzeichnis für die SQLite-Datei anlegen und zusammen mit
-        `/app/staticfiles` an `app:app` übereignen -- **das** ist der Punkt, an
-        dem ein unprivilegierter Prozess sonst scheitert: SQLite braucht
-        Schreibrechte nicht nur auf die Datei, sondern auf das *Verzeichnis*
-        (Journal- bzw. WAL-Datei).
-      - `ENV DJANGO_DB_PATH=/data/db.sqlite3 DJANGO_STATIC_ROOT=/app/staticfiles`
-        -- Pfade, keine Secrets.
-      - `USER app`, `EXPOSE 8000`,
-        `ENTRYPOINT ["entrypoint.sh"]`,
-        `CMD ["gunicorn", "learning_companion.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]`
+      `core/_form.html` -- erwartet `form`, optional `error_intro`:
+      1. Fehler-Alert (`alert-danger`, `role="alert"`) mit Einleitungssatz und den
+         `non_field_errors`; Klasse `errors` bleibt zusätzlich erhalten.
+      2. Pflichtfeld-Hinweis, falls `form|has_required`.
+      3. Versteckte Felder unverändert.
+      4. Pro sichtbarem Feld: bei `field.use_fieldset` (Mehrfach-Checkboxen)
+         `<fieldset>` + `<legend>` und Chip-Container, sonst `<label for>` +
+         `{{ field|bs_widget }}`; einzelne Checkbox als `form-check`. Danach
+         Hilfetext (`id="<auto_id>_helptext"`, `form-text`) und Fehler
+         (`id="<auto_id>_error"`, `invalid-feedback d-block`).
 
-      Bewusst **nicht** im Image: `.env`, `SECRET_KEY`, `OPENAI_API_KEY`. Die
-      `.dockerignore` schließt `.env` zusätzlich aus, damit auch ein
-      versehentliches `COPY . .` den Schlüssel nicht einzieht.
+      `core/_status_badge.html` -- `planned` → `text-bg-secondary`,
+      `in-progress` → `text-bg-primary`, `done` → `text-bg-success`, jeweils mit
+      Icon (`aria-hidden`) **und** Statustext.
 
-- [ ] **Schritt 3: entrypoint.sh** --
-      ```sh
-      #!/bin/sh
-      set -e
-      python manage.py migrate --noinput
-      python manage.py collectstatic --noinput
-      exec "$@"
-      ```
-      `set -e` verhindert einen Start mit halb migrierter Datenbank. `exec`
-      ersetzt die Shell durch gunicorn, sodass gunicorn PID 1 wird und `SIGTERM`
-      aus `docker stop` direkt erhält -- ohne `exec` würde die Shell das Signal
-      schlucken und der Container liefe in den 10-Sekunden-Timeout.
+- [ ] **Schritt 3: base.html**
+      - `<head>`: Bootstrap-CSS und Icons-CSS mit SRI (SHA-384 aus den
+        ausgelieferten Dateien berechnet) + `crossorigin="anonymous"`;
+        Inline-SVG-Favicon (beseitigt den 404 auf `/favicon.ico` im Log).
+      - Kleiner `<style>`-Block nur noch für das, was Bootstrap nicht mitbringt:
+        Ressourcen-Typfarben `.badge-article/-video/-repo/-doc`, Chip-Optik für
+        Checkbox-Gruppen (`label:has(input:checked)`), KPI-Icon-Kreis, Avatar.
+        Die alten `.kpi-*`/`.bar*`/`.dashboard-table`/`.messages`-Regeln entfallen.
+      - Skip-Link (`visually-hidden-focusable`) → `<main id="main-content">`.
+      - Navbar `navbar-expand-lg` mit `data-bs-theme="dark"`, Toggler mit
+        `aria-controls`/`aria-expanded`/`aria-label`, Links über `{% nav_link %}`,
+        User-Dropdown mit POST-Logout als `<button class="dropdown-item">`.
+      - Messages als `alert-dismissible` (`error` → `danger`), Footer.
+      - `bootstrap.bundle.min.js` mit SRI am Ende von `<body>`.
 
-      Die Datei muss **LF**-Zeilenenden haben; mit CRLF scheitert der Start an
-      `/bin/sh^M: bad interpreter`. Absicherung auf zwei Ebenen: beim Schreiben
-      explizit LF, und in `.gitattributes` die Regel
-      `entrypoint.sh text eol=lf` gegen die globale `* text=auto`-Normalisierung
-      auf einem Windows-Checkout.
+- [ ] **Schritt 4: Business-Logik / Views** -- `SessionListView` erhält
+      `get_queryset()` mit `super().get_queryset().prefetch_related("tags")`.
+      Der bestehende `select_related("goal")` aus `OwnSessionMixin` bleibt
+      erhalten, das Scoping ebenso.
 
-- [ ] **Schritt 4: .dockerignore** -- ausgeschlossen werden `.git/`,
-      `.gitattributes`, `.venv/`, `venv/`, `__pycache__/`, `*.py[cod]`,
-      `db.sqlite3*`, `.env`, `staticfiles/`, `media/`, `.workflow/`,
-      `.github/`, `.idea/`, `.vscode/`, `Dockerfile`, `docker-compose.yml`,
-      `*.md`. Damit enthält der Build-Context nur Anwendungscode, `manage.py`
-      und die Requirements-Dateien.
+- [ ] **Schritt 5: UI / Templates -- Seiten**
 
-- [ ] **Schritt 5: docker-compose.yml** --
-      Ein Service `web` mit `build: .`, `ports: ["8000:8000"]`, einem benannten
-      Volume `dbdata:/data` für die SQLite-Datei und
-      ```yaml
-      env_file:
-        - path: .env
-          required: false
-      ```
-      Die `required: false`-Form sorgt dafür, dass `docker compose up` auch ohne
-      lokale `.env` startet. Zusätzlich gesetzt werden nur unkritische Defaults
-      (`DJANGO_DEBUG=False`, `DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1`) --
-      keine Secrets im Versionsstand. Kein `version:`-Schlüssel, der ist in
-      aktuellen Compose-Versionen obsolet und erzeugt eine Warnung.
+      | Template | Umsetzung |
+      |---|---|
+      | `home.html` | Anonym: Hero (`p-5 bg-body-tertiary rounded-3`) mit Login/Registrieren-CTA. Angemeldet: 4 Schnellzugriffs-Cards (Dashboard, Goals, Sessions, Profil) |
+      | `login.html`, `register.html` | `row justify-content-center` → `col-md-7 col-lg-5` → Card mit Icon-Kopf; `_form.html`; `btn-primary w-100`; Wechsel-Link im Card-Footer. Login behält den Satz "Benutzername oder Passwort ist falsch." als `error_intro` |
+      | `profile_detail.html` | Card: Initialen-Avatar, Name, Cohort, Focus Areas als `badge rounded-pill`; Platzhaltertexte unverändert |
+      | `profile_form.html`, `goal_form.html`, `learningsession_form.html` | `col-lg-8` Card; `_form.html`; Footer-Buttons Speichern / Abbrechen |
+      | `dashboard.html` | KPI-Row `row-cols-1 row-cols-md-3` mit Icon-Cards; 3 Tabellen-Cards (`table table-hover align-middle`, `caption`, `scope="col"`); Bootstrap-`progress` mit `{% widthratio … as pct %}` und ARIA-Werten; Status-Zeilen mit `_status_badge.html` |
+      | `goal_list.html` | Kopf mit "Neues Lernziel"-Button; Filter als Inline-Form (`form-select`, `id="status"`); Card-Grid `row-cols-1 row-cols-md-2 row-cols-xl-3`; pro Card Status-Badge, gekürzte Beschreibung, Aktionen im Footer |
+      | `goal_detail.html` | Kopf mit Titel, Badge, Aktionen; `col-lg-8`: Details-Card, Sessions-Tabelle, Ressourcen-Card mit Formular; `col-lg-4`: KI-Card mit beiden POST-Buttons und den Ergebnis-Sections (Klassen `ai-summary`/`ai-next-steps` bleiben) |
+      | `_resource_list.html` | `list-group` mit `badge badge-{typ}`, externem Link (Icon + visuell versteckter Hinweis "öffnet in neuem Tab") und Entfernen-Button mit `aria-label` |
+      | `learningsession_list.html` | Tabelle Datum / Lernziel / Dauer / Tags (Badges), responsive über `table-responsive` |
+      | `learningsession_detail.html` | Card mit `dl.row`, Tags als Badges, Aktionen |
+      | 3× `*_confirm_delete.html` | Card `border-danger` mit Warn-Icon, `btn-danger` + Abbrechen; Lösch-Formular bleibt POST |
 
-- [ ] **Schritt 6: .github/workflows/ci.yml** --
-      Zwei Jobs auf `ubuntu-latest`, Trigger:
-      ```yaml
-      on:
-        push:
-          branches: [main]
-        pull_request:
-          branches: [main]
-      permissions:
-        contents: read
-      ```
-      *Job `test`:* `actions/checkout@v4` → `actions/setup-python@v5` mit
-      `python-version: "3.12"` und `cache: pip` (als `cache-dependency-path`
-      beide Requirements-Dateien) → `pip install -r requirements-dev.txt` →
-      `ruff check .` → `python manage.py check` →
-      `python manage.py makemigrations --check --dry-run` →
-      `python manage.py test`.
+- [ ] **Schritt 6: Tests** (`core/tests/test_ui.py`) -- siehe Abschnitt 4.
 
-      *Job `docker`:* `actions/checkout@v4` → `docker build -t learning-companion:ci .`
-      Ein kaputtes Dockerfile färbt die CI damit rot, ohne dass ein Image
-      irgendwohin gepusht wird.
-
-      Keine `secrets`-Referenzen: ohne `OPENAI_API_KEY` läuft der AI-Service im
-      Mock-Modus, die Testsuite ist davon unabhängig (belegt durch Feature 4).
-
-- [ ] **Schritt 7: Dokumentation** -- `.env.example` um `DJANGO_DB_PATH` und
-      `DJANGO_STATIC_ROOT` ergänzen, jeweils mit Kommentar und leerem bzw.
-      auskommentiertem Wert (die Defaults aus `settings.py` greifen).
-
-- [ ] **Schritt 8: Validierung** -- siehe Abschnitt 4. Docker ist in dieser
-      Umgebung verfügbar (29.7.2), der Build und ein Container-Smoke-Test werden
-      daher **real ausgeführt**, nicht nur syntaktisch geprüft.
+- [ ] **Schritt 7: Validierung** -- `python manage.py check`,
+      `makemigrations --check --dry-run`, `ruff check .`, `python manage.py test`,
+      anschließend `.\.workflow\hooks\validate_code.ps1`. Zusätzlich jede Seite
+      einmal im laufenden Server aufrufen.
 
 ## 4. Validierung & Test-Strategie
 
-Das Feature ist Infrastruktur -- es entstehen keine neuen Django-Unit-Tests. Die
-Validierung erfolgt stattdessen gegen die realen Werkzeuge:
+**Regression:** Die 145 bestehenden Tests sind der primäre Nachweis, dass URLs,
+Feldnamen, IDs und Texte unverändert sind. **Kein bestehender Test wird
+angepasst.**
 
-| # | Prüfung | Kommando | Erwartung |
-|---|---|---|---|
-| 1 | Bestandstests nach Settings-Änderung | `python manage.py test` | 145 Tests, OK |
-| 2 | System-Check | `python manage.py check` | 0 Issues |
-| 3 | Migrationsfreiheit | `python manage.py makemigrations --check --dry-run` | No changes detected |
-| 4 | `collectstatic` lauffähig | `python manage.py collectstatic --noinput` | läuft durch (vorher: `ImproperlyConfigured`) |
-| 5 | Linter | `ruff check .` | keine Befunde |
-| 6 | Image-Build | `docker build -t learning-companion:ci .` | Exit 0 |
-| 7 | Non-Root | `docker run --rm learning-companion:ci id -u` | Ausgabe != 0 |
-| 8 | Keine Secrets im Image | `docker history --no-trunc` + `docker run --rm ... env` | kein `sk-`, kein echter `SECRET_KEY` |
-| 9 | Entrypoint-Zeilenenden | Prüfung auf `\r` in `entrypoint.sh` | kein Treffer |
-| 10 | Container-Smoke-Test | `docker compose up -d`, dann HTTP-Request auf `:8000` | Status 200 oder Redirect, Migration + collectstatic im Log |
-| 11 | Statische Dateien bei `DEBUG=False` | Request auf eine Admin-CSS-Datei | Status 200, nicht 404 |
-| 12 | Compose-Syntax | `docker compose config` | validiert fehlerfrei |
-| 13 | CI-Workflow-Syntax | YAML-Parse des Workflows + Prüfung der Trigger/Steps | `push`+`pull_request` auf `main`, Cache, alle vier Prüfschritte vorhanden |
-| 14 | Hook | `.\.workflow\hooks\validate_code.ps1` | Exit-Code 0 |
+**Neue Tests** in `core/tests/test_ui.py`:
 
-**Besonderes Augenmerk** liegt auf Prüfung 7, 10 und 11: Die Kombination
-"unprivilegierter Benutzer" + "SQLite schreibt ins Dateisystem" +
-"`collectstatic` schreibt nach `STATIC_ROOT`" ist genau die Stelle, an der ein
-sonst korrektes Dockerfile beim ersten Start scheitert. Ein reiner `docker build`
-würde das nicht aufdecken -- deshalb wird der Container tatsächlich gestartet
-und ein Request abgesetzt.
+| Testklasse | Testfall | Prüft |
+|---|---|---|
+| `BootstrapEinbindungTests` | `test_bootstrap_css_und_js_mit_sri` | CSS, Icons und Bundle-JS jeweils mit `integrity="sha384-…"` und `crossorigin="anonymous"` |
+| | `test_skip_link_und_main_landmark` | Skip-Link auf `#main-content`, `<main id="main-content">` vorhanden |
+| `NavigationTests` | `test_aktiver_link_dashboard` | auf `/dashboard/` trägt nur der Dashboard-Link `aria-current="page"` |
+| | `test_goal_detail_markiert_goals` | Goal-Detailseite markiert den Goals-Link aktiv |
+| | `test_session_seiten_markieren_sessions` | Session-Liste markiert den Sessions-Link aktiv |
+| | `test_logout_ist_post_formular_im_dropdown` | Dropdown enthält `<form … method="post">` auf `/accounts/logout/` mit CSRF-Token |
+| | `test_anonym_sieht_login_und_registrieren` | kein Dropdown, dafür Login-/Registrieren-Links |
+| `FormularDarstellungTests` | `test_felder_mit_bootstrap_klassen` | Goal-Formular: `form-control` am Titel, `form-select` am Status, IDs `id_title`/`id_status` unverändert |
+| | `test_fehler_markiert_feld` | ungültiger POST: `is-invalid`, `aria-invalid="true"`, `aria-describedby` zeigt auf `id_<feld>_error`, Fehlerelement existiert |
+| | `test_mehrfachauswahl_als_fieldset` | Session-Formular: Tags in `<fieldset>` mit `<legend>` |
+| | `test_login_formular_gestylt` | Login: `form-control` an `id_username`/`id_password`, ohne `forms.py`-Änderung |
+| `TemplateTagTests` | `test_bs_widget_klassen_je_widget_typ` | Filter direkt: TextInput → `form-control`, Select → `form-select`, Checkbox → `form-check-input` |
+| | `test_bs_widget_behaelt_vorhandene_klasse_und_placeholder` | `placeholder` aus `ResourceForm` bleibt erhalten |
+| | `test_has_required` | `True` für GoalForm, `False` für ein Formular ohne Pflichtfelder |
+| `SeitenDarstellungTests` | `test_status_badge_mit_text` | Goal-Liste zeigt Badge `text-bg-success` **mit** Text "Erledigt" |
+| | `test_dashboard_progressbar_aria` | Dashboard mit Daten: `role="progressbar"` mit `aria-valuenow` |
+| | `test_session_liste_zeigt_tags_ohne_n_plus_1` | Tags als Badges; `assertNumQueries` bleibt bei 3 vs. 6 Sessions konstant |
+| | `test_externer_link_kuendigt_neuen_tab_an` | Ressourcen-Link mit `target="_blank"` enthält den visuell versteckten Hinweis |
 
-**Abnahmekriterium:** `validate_code.ps1` endet mit Exit-Code 0 **und** die
-Prüfungen 6, 7, 10 und 12 sind real durchgeführt und dokumentiert.
+**Kommandos** (im aktiven `.venv`):
+
+```powershell
+python manage.py check
+python manage.py makemigrations --check --dry-run
+ruff check .
+python manage.py test
+.\.workflow\hooks\validate_code.ps1
+```
+
+**Manuelle Sichtprüfung:** Server starten, als Testnutzer jede Seite aufrufen
+(Startseite, Login, Registrierung, Profil + Bearbeiten, Dashboard, Goal-Liste,
+-Detail, -Formular, -Löschen, Session-Liste, -Detail, -Formular, -Löschen,
+Ressource-Löschen) und Status 200 sowie das Fehlen von Template-Fehlern prüfen.
+
+**Abnahmekriterium:** `validate_code.ps1` endet mit Exit-Code 0, alle 145
+Bestandstests unverändert grün, alle neuen UI-Tests grün.
