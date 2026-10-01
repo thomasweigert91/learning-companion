@@ -1,6 +1,8 @@
 from django.contrib import messages
 from django.contrib.auth import login
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.db.models import Count, Sum
+from django.db.models.functions import TruncWeek
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
 from django.views import View
@@ -324,3 +326,96 @@ class GoalNextStepsView(GoalAIActionMixin, View):
 
     def build_result(self, ergebnis, goal):
         return {"goal_id": goal.pk, "steps": ergebnis}
+
+
+# --- Dashboard --------------------------------------------------------------
+
+
+class DashboardView(LoginRequiredMixin, TemplateView):
+    """Aggregierte Auswertung der eigenen Lernaktivitaet.
+
+    Saemtliche Kennzahlen berechnet die Datenbank (Count/Sum), nicht eine
+    Schleife in Python. Gefiltert wird konsequent auf den angemeldeten Nutzer:
+    Goals ueber user, Sessions ueber goal__user.
+    """
+
+    template_name = "core/dashboard.html"
+
+    def get_goals(self):
+        return Goal.objects.filter(user=self.request.user)
+
+    def get_sessions(self):
+        return LearningSession.objects.filter(goal__user=self.request.user)
+
+    def goals_nach_status(self):
+        """Anzahl Goals je Status -- auch ein Status ohne Goals, dann mit 0."""
+        gezaehlt = dict(
+            self.get_goals().values_list("status").annotate(anzahl=Count("pk"))
+        )
+        return [
+            {"status": wert, "label": label, "anzahl": gezaehlt.get(wert, 0)}
+            for wert, label in Goal.Status.choices
+        ]
+
+    def zeit_je_tag(self):
+        """Lernminuten je Tag-Kategorie.
+
+        tags__isnull=False unterdrueckt die None-Gruppe, die der LEFT JOIN auf
+        die M2M-Tabelle fuer Sessions ohne Tag erzeugen wuerde. Eine Session mit
+        mehreren Tags zaehlt bewusst in jede ihrer Kategorien ein.
+        """
+        return list(
+            self.get_sessions()
+            .filter(tags__isnull=False)
+            .values("tags__name")
+            .annotate(minuten=Sum("duration"))
+            .order_by("-minuten", "tags__name")
+        )
+
+    def zeit_je_woche(self):
+        """Lernminuten je Kalenderwoche; woche ist jeweils der Montag.
+
+        Das order_by() am Ende ist nicht nur Kosmetik: ohne es zieht
+        Meta.ordering = ["-date", "-pk"] das Feld pk in die GROUP-BY-Klausel
+        und die Gruppierung zerfaellt in Einzelzeilen.
+        """
+        return list(
+            self.get_sessions()
+            .annotate(woche=TruncWeek("date"))
+            .values("woche")
+            .annotate(minuten=Sum("duration"))
+            .order_by("woche")
+        )
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+
+        sessions = self.get_sessions()
+        nach_status = self.goals_nach_status()
+        je_tag = self.zeit_je_tag()
+        je_woche = self.zeit_je_woche()
+
+        context["goals_nach_status"] = nach_status
+        context["zeit_je_tag"] = je_tag
+        context["zeit_je_woche"] = je_woche
+
+        context["goals_gesamt"] = self.get_goals().count()
+        context["sessions_gesamt"] = sessions.count()
+        # aggregate() liefert None, solange es keine Sessions gibt.
+        context["minuten_gesamt"] = (
+            sessions.aggregate(gesamt=Sum("duration"))["gesamt"] or 0
+        )
+
+        # Bezugsgroessen fuer die Balkenbreite im Template. default=0 deckt den
+        # Fall "keine Daten" ab; bei 0 rendert das Template keinen Balken.
+        context["max_status_anzahl"] = max(
+            (zeile["anzahl"] for zeile in nach_status), default=0
+        )
+        context["max_tag_minuten"] = max(
+            (zeile["minuten"] for zeile in je_tag), default=0
+        )
+        context["max_wochen_minuten"] = max(
+            (zeile["minuten"] for zeile in je_woche), default=0
+        )
+
+        return context

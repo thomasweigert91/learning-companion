@@ -1,182 +1,173 @@
-# Implementierungs-Plan: AI-powered summary and next steps — Service-Layer, Mock-Strategie und Fehlerbehandlung
+# Implementierungs-Plan: Dashboard und Auswertung der Lernaktivitaet
 
 ## 1. Betroffene Dateien
 
-**Neu — Service-Layer**
-
-- Neu: `core/services/__init__.py`
-- Neu: `core/services/ai_service.py` — gesamte OpenAI-Anbindung, Prompt-Bau, Fehler-Übersetzung, Mock-Modus
-
-**Ändern**
-
-- Ändern: `requirements.txt` — `openai` ergänzen
-- Ändern: `.env.example` — `OPENAI_API_KEY`, `OPENAI_MODEL`, `AI_MOCK_MODE` dokumentieren
-- Ändern: `learning_companion/settings.py` — die drei Einstellungen aus der Umgebung lesen
-- Ändern: `core/views.py` — `GoalSummaryView` und `GoalNextStepsView` ergänzen, `GoalDetailView` um die Ergebnisse aus der Session erweitern
-- Ändern: `core/urls.py` — zwei Routen ergänzen
-- Ändern: `core/templates/base.html` — Django-Messages ausgeben (bislang nicht vorhanden)
-- Ändern: `core/templates/core/goal_detail.html` — zwei Aktions-Formulare und die Ergebnisbereiche
-
-**Neu — Tests**
-
-- Neu: `core/tests/test_ai_service.py` — Service im Mock-Modus, Prompt-Inhalt, Fehler-Übersetzung
-- Neu: `core/tests/test_ai_views.py` — beide Views, Anzeige, Fehlerpfade, Scoping
-
-**Unverändert:** `core/models.py`, `core/forms.py`, `core/admin.py`, alle Migrationen (dieses Feature bringt **kein** neues Modell mit) sowie alle bestehenden Testmodule.
+- Neu: `core/templates/core/dashboard.html`
+- Neu: `core/tests/test_dashboard.py`
+- Ändern: `core/views.py` (neue `DashboardView`)
+- Ändern: `core/urls.py` (Route `dashboard/` -> `core:dashboard`)
+- Ändern: `core/templates/base.html` (Navigations-Link + CSS fuer Kacheln/Balken)
 
 ## 2. Datenmodelle & Migrationen
 
-**Es werden keine Modelle geändert und keine Migration erzeugt.**
+**Keine.** Das Feature ist rein lesend. Alle benoetigten Felder existieren bereits:
 
-Das ist eine bewusste Entscheidung und zugleich ein Akzeptanzkriterium: Generierte Zusammenfassungen sind Momentaufnahmen über einen Datenbestand, der sich mit der nächsten Lernsitzung ändert. Würden sie persistiert, entstünde sofort die Frage nach Invalidierung und Veralterung — ein Problem, das das Ticket nicht stellt.
+| Modell | genutzte Felder | Rolle in der Auswertung |
+| --- | --- | --- |
+| `Goal` | `user`, `status` | Gruppierung "Ziele nach Status" |
+| `LearningSession` | `goal` (-> `goal__user`), `date`, `duration`, `tags` | Basis beider Zeit-Auswertungen |
+| `Tag` | `name` (ueber `LearningSession.tags`) | Gruppierung "Lernzeit je Tag-Kategorie" |
 
-**Ablage der Ergebnisse: Django-Session.**
+Es werden **keine** Felder ergaenzt und **keine** Migration erzeugt.
+`python manage.py makemigrations --check` muss folglich sauber bleiben.
 
-```
-request.session["ai_summary"]     = {"goal_id": <pk>, "text": "..."}
-request.session["ai_next_steps"]  = {"goal_id": <pk>, "steps": ["...", "...", "..."]}
-```
+**Scoping-Konvention (unveraendert uebernommen):**
 
-Der Schlüssel trägt die `goal_id` mit, damit `GoalDetailView` ein Ergebnis nur dann anzeigt, wenn es zum gerade betrachteten Goal gehört. Ohne diesen Abgleich würde eine Zusammenfassung von Goal A auch unter Goal B erscheinen. Da die Session serverseitig gehalten wird und an den angemeldeten Nutzer gebunden ist, verlässt kein Ergebnis den Besitzer.
-
-**Begrenzung des Prompt-Kontexts.** Es werden höchstens die jüngsten 10 Lernsitzungen und 20 Ressourcen übergeben (Konstanten `MAX_SESSIONS` und `MAX_RESOURCES` im Service). Ohne Obergrenze würde der Prompt mit der Datenmenge wachsen und irgendwann das Kontextfenster oder das Kostenbudget sprengen.
-
-**Settings** (`learning_companion/settings.py`):
-
-```python
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_TIMEOUT_SECONDS = float(os.environ.get("OPENAI_TIMEOUT_SECONDS", "20"))
-AI_MOCK_MODE = os.environ.get("AI_MOCK_MODE", "") == "True"
-```
-
-Kein Default-Key, kein Fallback-Literal. Fehlt der Key, bleibt der Wert leer — der Service schaltet dann selbsttätig in den Mock-Modus, statt beim Start zu scheitern. `manage.py check` läuft damit auch ohne Key durch.
+- Goals: `Goal.objects.filter(user=request.user)`
+- Sessions: `LearningSession.objects.filter(goal__user=request.user)` --
+  der Besitzer wird weiterhin nicht redundant auf der Session gespeichert.
 
 ## 3. Schrittweise Umsetzung
 
-- [ ] **Schritt 1: Abhängigkeit und Konfiguration** — `openai>=1.40,<2.0` in `requirements.txt` eintragen und im `.venv` installieren; `.env.example` um die drei Variablen ergänzen — `OPENAI_API_KEY` bleibt dort **leer**, es wird bewusst kein realistisch aussehender Beispielschlüssel hinterlegt, auch kein erfundener; die vier Einstellungen in `settings.py` ergänzen. Abnahme: `manage.py check` Exit-Code 0 **ohne** gesetzten Key.
+- [ ] **Schritt 1: Setup & Models** -- Verifizieren, dass keine Modell-Aenderung
+      noetig ist (`makemigrations --check`). In `core/views.py` die Importe
+      ergaenzen: `from django.db.models import Count, Sum` und
+      `from django.db.models.functions import TruncWeek`.
 
-- [ ] **Schritt 2: Service-Layer, Gerüst und Mock-Modus** — `core/services/ai_service.py` anlegen mit:
-  - `class AIServiceError(Exception)` — die einzige Exception, die den Service verlässt.
-  - `def is_mock_mode()` → `settings.AI_MOCK_MODE or not settings.OPENAI_API_KEY`. Damit ist der Mock aktiv, sobald er eingeschaltet ist **oder** kein Key vorliegt; die Anwendung bleibt lokal ohne Key benutzbar.
-  - Konstanten `MAX_SESSIONS = 10`, `MAX_RESOURCES = 20`.
-  
-  Der Mock liefert deterministische, aus den echten Goal-Daten abgeleitete Ergebnisse (Titel, Anzahl Sessions, Gesamtdauer), damit die Oberfläche im Mock-Betrieb plausibel aussieht und nicht nur Platzhalter zeigt.
+- [ ] **Schritt 2: Business-Logik / Views** -- `DashboardView(LoginRequiredMixin,
+      TemplateView)` mit `template_name = "core/dashboard.html"` anlegen. Die
+      Aggregation wird in vier kleine, je einzeln testbare Hilfsmethoden
+      zerlegt, die alle `request.user` als Grundlage haben:
 
-- [ ] **Schritt 3: Prompt-Bau** — Zwei private Funktionen `_build_summary_prompt(goal)` und `_build_next_steps_prompt(goal)`. Beide lesen ausschließlich über die Beziehungen des übergebenen Goals (`goal.sessions.all()[:MAX_SESSIONS]`, `goal.resources.all()[:MAX_RESOURCES]`) — es gibt im Service keine einzige Query, die nicht von diesem Goal ausgeht. Daraus folgt strukturell, dass keine Fremddaten in den Prompt geraten können; ein Test prüft es zusätzlich explizit.
-  
-  Die Prompts fordern deutschsprachige Ausgabe an. Für die nächsten Schritte wird eine zeilenweise Liste angefordert und die Antwort serverseitig in eine Python-Liste zerlegt und auf 2 bis 3 Einträge begrenzt — die Längenzusage wird also nicht dem Modell überlassen, sondern im Code durchgesetzt.
+      1. `_goals_nach_status()`
+         ```python
+         roh = dict(
+             Goal.objects.filter(user=self.request.user)
+             .values_list("status")
+             .annotate(anzahl=Count("pk"))
+         )
+         return [
+             {"status": wert, "label": label, "anzahl": roh.get(wert, 0)}
+             for wert, label in Goal.Status.choices
+         ]
+         ```
+         Die Schleife ueber `Goal.Status.choices` sorgt dafuer, dass ein Status
+         ohne Goals mit 0 erscheint statt zu fehlen. Gezaehlt wird weiterhin in
+         der Datenbank (`Count`), nicht in Python.
 
-- [ ] **Schritt 4: API-Aufruf und Fehler-Übersetzung** — `_call_openai(prompt)` kapselt den einzigen SDK-Kontakt:
-  - Client als `OpenAI(api_key=settings.OPENAI_API_KEY, timeout=settings.OPENAI_TIMEOUT_SECONDS, max_retries=1)`. Explizites Timeout, damit ein hängender Aufruf keinen Request-Thread dauerhaft blockiert; `max_retries=1`, damit ein Rate-Limit nicht zu langen Wartezeiten im Request führt.
-  - Aufruf über `client.chat.completions.create(model=settings.OPENAI_MODEL, messages=[...])`.
-  - `except APITimeoutError` → `AIServiceError` mit der Meldung zum Timeout.
-  - `except RateLimitError` → `AIServiceError` mit eigener Meldung.
-  - `except Exception` → `AIServiceError` mit einer generischen Meldung. Der ursprüngliche Fehler wird per `logger.exception()` protokolliert, aber **nicht** in die Nutzermeldung übernommen — so landen weder Stacktrace noch SDK-Rohtext noch ein Key-Fragment in der Oberfläche.
-  
-  Der Import der SDK-Fehlertypen erfolgt modulweit; das SDK ist damit ausschließlich in dieser Datei bekannt.
+      2. `_zeit_je_tag()`
+         ```python
+         LearningSession.objects.filter(goal__user=user, tags__isnull=False)
+             .values("tags__name")
+             .annotate(minuten=Sum("duration"))
+             .order_by("-minuten", "tags__name")
+         ```
+         `tags__isnull=False` verhindert die `None`-Gruppe aus dem LEFT JOIN auf
+         die M2M-Tabelle. Eine Session mit mehreren Tags erzeugt mehrere
+         Join-Zeilen und zaehlt damit korrekt in jede Kategorie ein.
 
-- [ ] **Schritt 5: Öffentliche Service-Funktionen** — `generate_summary(goal)` → `str` und `suggest_next_steps(goal)` → `list[str]`. Beide prüfen zuerst `is_mock_mode()` und liefern in dem Fall das Mock-Ergebnis, ohne das Netzwerk zu berühren. Beide verändern die Datenbank nicht.
+      3. `_zeit_je_woche()`
+         ```python
+         LearningSession.objects.filter(goal__user=user)
+             .annotate(woche=TruncWeek("date"))
+             .values("woche")
+             .annotate(minuten=Sum("duration"))
+             .order_by("woche")
+         ```
+         `TruncWeek` liefert den Montag der jeweiligen Woche als `date`.
+         Wichtig: `.order_by()` muss nach `.values()` gesetzt werden, sonst
+         zieht `Meta.ordering = ["-date", "-pk"]` das Feld `pk` in die
+         GROUP-BY-Klausel und sprengt die Gruppierung.
 
-- [ ] **Schritt 6: Views** — In `core/views.py` ein gemeinsames `GoalAIActionMixin` mit `LoginRequiredMixin`, das in `post()`:
-  1. das Goal per `get_object_or_404(Goal.objects.filter(user=request.user), pk=pk)` auflöst — der 404 fällt also **vor** jedem API-Aufruf;
-  2. die jeweilige Service-Funktion aufruft;
-  3. das Ergebnis mit `goal_id` in die Session legt;
-  4. bei `AIServiceError` `messages.error(request, str(fehler))` setzt;
-  5. in beiden Fällen auf `goal.get_absolute_url()` zurückleitet (302).
-  
-  Daraus abgeleitet `GoalSummaryView` und `GoalNextStepsView`, die sich nur in Service-Funktion und Session-Schlüssel unterscheiden. Nur `post()` wird implementiert — ein GET läuft damit in 405 und löst keine Aktion aus.
-  
-  `GoalDetailView.get_context_data()` liest beide Session-Einträge und legt sie nur dann in den Kontext, wenn die hinterlegte `goal_id` zum aktuellen Goal passt.
+      4. `_kpis()` -- `Goal.objects.filter(...).count()`,
+         `sessions.count()` und
+         `sessions.aggregate(gesamt=Sum("duration"))["gesamt"] or 0`
+         (das `or 0` faengt das `None` bei leerer Datenlage ab).
 
-- [ ] **Schritt 7: URLs** — `goals/<int:pk>/ai/summary/` → `goal_ai_summary` und `goals/<int:pk>/ai/next-steps/` → `goal_ai_next_steps`.
+      `get_context_data()` legt zusaetzlich zu den Listen jeweils den
+      Maximalwert (`max_tag_minuten`, `max_wochen_minuten`) in den Kontext --
+      berechnet mit `max(..., default=0)`. Daraus bestimmt das Template die
+      Balkenbreite; ist das Maximum 0, wird gar keine Tabelle gerendert, womit
+      eine Division durch Null strukturell ausgeschlossen ist.
 
-- [ ] **Schritt 8: Templates** — In `base.html` einen Messages-Block ergänzen (`{% if messages %}` mit `message.tags` als CSS-Klasse) sowie Styling für `.messages .error`. In `goal_detail.html` einen Abschnitt mit den beiden POST-Formularen (je `{% csrf_token %}`) und darunter die Ergebnisbereiche, jeweils in `{% if %}` gekapselt — vor der ersten Nutzung erscheint damit kein leerer Rumpf. Die nächsten Schritte werden als `<ol>` gerendert.
+- [ ] **Schritt 3: UI / Templates** -- `core/templates/core/dashboard.html`
+      anlegen (`{% extends "base.html" %}`):
+      - KPI-Kacheln (Goals gesamt, Sessions gesamt, Lernzeit gesamt) als
+        `div.kpi-card` in einem `div.kpi-row`.
+      - Drei Abschnitte mit je einer `<table>`; in der letzten Spalte ein
+        `div.bar` mit `style="width: {% widthratio wert maximum 100 %}%"`.
+        `widthratio` ist der Django-Bordmittel-Weg fuer die Prozentrechnung und
+        gibt bei Nenner 0 einen leeren String zurueck -- zusammen mit der
+        `{% if %}`-Huelle doppelt abgesichert.
+      - Pro Abschnitt ein `{% empty %}`- bzw. `{% if %}`-Zweig mit einer
+        Hinweiszeile ("Noch keine Lernsitzungen erfasst.").
+      - Wochen-Spalte via `{{ zeile.woche|date:"d.m.Y" }}` als Wochenbeginn.
 
-- [ ] **Schritt 9: Mock-Erzwingung in der Testsuite** — Damit kein Testlauf je das Netz berührt, auch nicht auf einem Entwicklerrechner mit gesetztem Key: Beide neuen Testmodule tragen `@override_settings(AI_MOCK_MODE=True, OPENAI_API_KEY="")` auf Klassenebene. Die Tests, die Fehlerpfade prüfen, patchen zusätzlich gezielt `_call_openai` und schalten den Mock dafür ab.
+      In `base.html` den Nav-Link `<a href="{% url 'core:dashboard' %}">Dashboard</a>`
+      im `{% if user.is_authenticated %}`-Block ergaenzen (vor "Goals") und den
+      bestehenden `<style>`-Block um `.kpi-row`, `.kpi-card`, `.bar` und
+      `.bar-track` erweitern -- reines CSS, kein Framework, passend zum
+      bestehenden Badge-Stil.
 
-- [ ] **Schritt 10: Tests** — Die beiden Testmodule gemäß Abschnitt 4 schreiben.
+      In `core/urls.py` ergaenzen:
+      `path("dashboard/", views.DashboardView.as_view(), name="dashboard")`.
 
-- [ ] **Schritt 11: Gesamtvalidierung** — `manage.py check`, `makemigrations --check --dry-run`, `manage.py test` (90 bestehende plus neue) und `.\.workflow\hooks\validate_code.ps1`; alles mit Exit-Code 0. Zusätzlich eine Repository-Suche nach `sk-` als Nachweis, dass kein Schlüssel-Literal eingecheckt ist.
+- [ ] **Schritt 4: Tests** -- `core/tests/test_dashboard.py` nach dem Muster von
+      `core/tests/test_scoping.py` mit einer gemeinsamen
+      `DashboardDatenTestCase(TestCase)`-Basis (`setUpTestData`):
+      - Nutzer A: 2 Goals `planned`, 1 Goal `in-progress`, 0 Goals `done`.
+      - Tags `Python` und `Django`.
+      - Sessions von A: 60 Min (Tag Python) und 30 Min (Tags Python + Django) in
+        Woche 1, 45 Min (Tag Django) sowie 20 Min **ohne Tag** in Woche 2.
+        Erwartet: Python 90, Django 75; Woche 1 = 90, Woche 2 = 65; gesamt 155
+        bei 4 Sessions. Die taglose Session belegt zugleich, dass der LEFT JOIN
+        keine `None`-Kategorie erzeugt, die Zeit aber in Wochen- und
+        Gesamtsumme einfliesst.
+      - Nutzer B bekommt eine **spiegelbildliche** Datenlage mit anderen Werten,
+        damit ein fehlendes Scoping die Zahlen von A nachweislich verschoebe.
+
+- [ ] **Schritt 5: Validierung** -- `python manage.py check`,
+      `python manage.py makemigrations --check --dry-run` und
+      `python manage.py test` im aktiven `.venv` ausfuehren, anschliessend
+      `.\.workflow\hooks\validate_code.ps1`.
 
 ## 4. Validierung & Test-Strategie
 
-### `core/tests/test_ai_service.py`
+**Testmodul:** `core/tests/test_dashboard.py`
 
-Mock-Modus:
+| Testklasse | Testfall | Prueft |
+| --- | --- | --- |
+| `DashboardZugriffTests` | `test_anonym_wird_umgeleitet` | `GET /dashboard/` ohne Login -> `assertRedirects` auf `login?next=/dashboard/` |
+| | `test_angemeldet_erreichbar` | Status 200 und Template `core/dashboard.html` |
+| | `test_navbar_enthaelt_dashboard_link` | `/goals/` enthaelt `href="/dashboard/"` fuer angemeldete Nutzer |
+| `GoalsNachStatusTests` | `test_zaehlung_je_status` | Kontext `goals_nach_status` liefert exakt `planned=2`, `in-progress=1`, `done=0` |
+| | `test_status_ohne_goals_wird_mit_null_ausgewiesen` | alle drei Status-Werte sind enthalten, auch der leere |
+| `ZeitJeTagTests` | `test_summe_je_tag` | `Python = 90`, `Django = 75` (Mehrfach-Tag zaehlt in beide Kategorien) |
+| | `test_session_ohne_tag_erzeugt_keine_leere_gruppe` | kein Eintrag mit `tags__name is None` |
+| `ZeitJeWocheTests` | `test_summe_je_kalenderwoche` | zwei Wochen-Eintraege mit 90 und 65 Minuten, aufsteigend nach `woche` sortiert |
+| | `test_wochenbeginn_ist_montag` | `TruncWeek` liefert den Montag der jeweiligen Woche |
+| `KpiTests` | `test_kpi_summen` | `goals_gesamt=3`, `sessions_gesamt=4`, `minuten_gesamt=155` |
+| `IsolationsTests` | `test_fremde_goals_aendern_status_zaehlung_nicht` | Nutzer A sieht trotz Goals von B weiterhin 2/1/0 |
+| | `test_fremde_sessions_aendern_tag_summen_nicht` | Tag-Summen von A bleiben 90/75 |
+| | `test_fremde_sessions_aendern_wochen_summen_nicht` | Wochen-Summen von A bleiben 90/65 |
+| | `test_fremde_daten_aendern_kpis_nicht` | `minuten_gesamt` von A bleibt 155 |
+| `LeeresDashboardTests` | `test_nutzer_ohne_daten` | frischer Nutzer: Status 200, alle KPIs 0, leere Listen, keine Exception |
+| | `test_hinweis_statt_leerer_tabelle` | Response enthaelt den Hinweistext |
 
-- `test_mock_mode_active_without_api_key` — ohne Key ist `is_mock_mode()` wahr, auch wenn `AI_MOCK_MODE` aus ist.
-- `test_mock_mode_active_when_explicitly_enabled`
-- `test_generate_summary_returns_text_in_mock_mode` — nicht leer, enthält den Goal-Titel.
-- `test_suggest_next_steps_returns_two_to_three_items` — Liste, Länge zwischen 2 und 3, alle Einträge nicht leer.
-- `test_service_does_not_touch_database` — die Objektzahlen von `Goal`, `LearningSession` und `Resource` sind vor und nach beiden Aufrufen identisch.
+**Begruendung der Isolations-Strategie:** Ein Scoping-Fehler faellt nur auf, wenn
+die Fremddaten die Kennzahlen veraendern wuerden. Deshalb bekommt Nutzer B
+Sessions mit *anderen* Dauern und dieselben Tags -- ein fehlendes
+`goal__user=`-Filter wuerde die Tag-Summe von A sofort nach oben ziehen und den
+Test rot faerben.
 
-Prompt-Inhalt (der sicherheitsrelevante Teil):
+**Kommandos** (im aktiven `.venv`):
 
-- `test_prompt_contains_only_own_goal_data` — zwei Nutzer mit je einem Goal, Sessions und Ressourcen mit eindeutigen Markertexten. Der Prompt für A's Goal enthält A's Marker und **keinen** Marker von B.
-- `test_prompt_limits_number_of_sessions` — 25 Sessions anlegen, prüfen dass höchstens `MAX_SESSIONS` Datumsangaben im Prompt vorkommen.
-- `test_prompt_contains_resources` — Ressourcentitel und -typ sind enthalten.
-
-Fehler-Übersetzung (mit abgeschaltetem Mock und gepatchtem SDK):
-
-- `test_timeout_is_translated_to_service_error` — `APITimeoutError` aus dem SDK → `AIServiceError`.
-- `test_rate_limit_is_translated_to_service_error` — `RateLimitError` → `AIServiceError`.
-- `test_unexpected_exception_is_translated_to_service_error` — ein beliebiger `RuntimeError` → `AIServiceError`.
-- `test_error_message_does_not_leak_internals` — die Meldung enthält weder `"sk-"` noch `"Traceback"` noch den rohen Ausnahmetext.
-
-### `core/tests/test_ai_views.py`
-
-Alle Klassen mit `@override_settings(AI_MOCK_MODE=True, OPENAI_API_KEY="")`.
-
-Kein Netzwerk:
-
-- `test_no_external_call_during_tests` — `core.services.ai_service._call_openai` wird durch ein Double ersetzt, das bei jedem Aufruf `self.fail()` auslöst; danach werden beide Aktionen ausgeführt. Schlägt der Test nicht fehl, hat kein echter Aufruf stattgefunden.
-
-Aktionen und Anzeige:
-
-- `test_summary_action_redirects_to_goal_detail` — POST → 302 auf die Detailseite.
-- `test_summary_result_visible_on_detail_page` — nach dem POST enthält die Detailseite den generierten Text.
-- `test_next_steps_action_redirects_and_shows_list` — nach dem POST sind 2 bis 3 Listeneinträge im Kontext und im HTML.
-- `test_actions_not_triggered_by_get` — GET auf beide URLs liefert 405 und legt nichts in die Session.
-- `test_no_result_block_before_first_use` — die frische Detailseite enthält weder Zusammenfassungs- noch Next-Steps-Bereich.
-- `test_result_of_other_goal_not_shown` — nach einer Zusammenfassung zu Goal 1 zeigt die Detailseite von Goal 2 (desselben Nutzers) diese **nicht** an.
-
-Fehlerpfade (Mock abgeschaltet, Service-Funktion wirft `AIServiceError`):
-
-- `test_timeout_shows_message_and_redirects` — 302, kein 500er, die Meldung erscheint nach dem Folge-GET in der Oberfläche.
-- `test_rate_limit_shows_message`
-- `test_unexpected_error_shows_message`
-- `test_failed_action_leaves_no_result_in_session` — nach einem Fehler steht kein halbes Ergebnis in der Session.
-
-Scoping:
-
-- `test_ai_actions_require_login` — beide URLs, anonymer POST → `assertRedirects` auf die Login-Seite.
-- `test_ai_actions_on_foreign_goal_return_404` — A postet auf beide Aktionen für B's Goal → 404.
-- `test_foreign_goal_action_does_not_call_service` — zusätzlich belegt, dass dabei die Service-Funktion gar nicht erst aufgerufen wurde (Double zählt Aufrufe, erwartet 0). Der 404 fällt also vor dem API-Kontakt.
-- `test_own_goal_actions_work` — Gegenprobe, damit die 404-Tests nicht durch eine global kaputte View trivial erfüllt sind.
-
-### Testdaten
-
-- `setUpTestData` legt Nutzer, Goals, Sessions und Ressourcen mit eindeutigen Markertexten an, damit Prompt-Inhalte eindeutig zuordenbar sind.
-- Keine Fixture-Dateien. Kein Test benötigt einen API-Key oder Netzwerkzugang.
-
-### Auszuführende Kommandos
-
-```
+```powershell
 python manage.py check
 python manage.py makemigrations --check --dry-run
 python manage.py test
 .\.workflow\hooks\validate_code.ps1
 ```
 
-Zusätzlich als Sicherheitsnachweis:
-
-```
-git grep -n "sk-" -- . ":(exclude).venv"
-```
-
-### Definition of Done
-
-Alle vier Kommandos enden mit Exit-Code 0, die 90 Tests aus Feature 1 bis 3 laufen unverändert mit durch, es entsteht **keine** neue Migration, die Repository-Suche nach einem Schlüssel-Literal bleibt ohne Treffer, und jedes der 31 Akzeptanzkriterien aus `.workflow/artifacts/ticket.md` ist durch mindestens einen benannten Test oder einen Kommando-Exit-Code belegt.
-
-**Vorbehalt:** Der echte API-Pfad ist mangels Schlüssel in dieser Umgebung nicht end-to-end verifizierbar. Abgenommen werden Mock-Betrieb, Prompt-Aufbau und Fehlerbehandlung; die Korrektheit des SDK-Aufrufs gegen die Live-API bleibt offen und ist im Review als solche festzuhalten.
+**Abnahmekriterium:** `validate_code.ps1` endet mit Exit-Code 0, d. h. System-Check
+und die komplette Test-Suite (bestehende Module inklusive) laufen gruen durch.

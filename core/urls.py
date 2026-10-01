@@ -7,6 +7,8 @@ app_name = "core"
 
 urlpatterns = [
     path("", views.HomeView.as_view(), name="home"),
+    # Auswertung
+    path("dashboard/", views.DashboardView.as_view(), name="dashboard"),
     # Authentifizierung
     path("accounts/register/", views.RegisterView.as_view(), name="register"),
     path(

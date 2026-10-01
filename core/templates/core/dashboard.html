@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard &ndash; Learning Companion{% endblock %}
+
+{% block content %}
+    <h1>Dashboard</h1>
+
+    <div class="kpi-row">
+        <div class="kpi-card">
+            <span class="kpi-wert">{{ goals_gesamt }}</span>
+            <span class="kpi-label">Lernziele</span>
+        </div>
+        <div class="kpi-card">
+            <span class="kpi-wert">{{ sessions_gesamt }}</span>
+            <span class="kpi-label">Lernsitzungen</span>
+        </div>
+        <div class="kpi-card">
+            <span class="kpi-wert">{{ minuten_gesamt }}</span>
+            <span class="kpi-label">Minuten Lernzeit</span>
+        </div>
+    </div>
+
+    <h2>Lernziele nach Status</h2>
+    {% if goals_gesamt %}
+        <table class="dashboard-table">
+            <thead>
+                <tr><th>Status</th><th>Anzahl</th><th>Verteilung</th></tr>
+            </thead>
+            <tbody>
+                {% for zeile in goals_nach_status %}
+                    <tr>
+                        <td>{{ zeile.label }}</td>
+                        <td class="zahl">{{ zeile.anzahl }}</td>
+                        <td>
+                            {# max_status_anzahl ist hier garantiert > 0. #}
+                            <div class="bar-track">
+                                <div class="bar"
+                                     style="width: {% widthratio zeile.anzahl max_status_anzahl 100 %}%"></div>
+                            </div>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>Noch keine Lernziele angelegt.</p>
+    {% endif %}
+
+    <h2>Lernzeit je Kategorie</h2>
+    {% if max_tag_minuten %}
+        <table class="dashboard-table">
+            <thead>
+                <tr><th>Kategorie</th><th>Minuten</th><th>Anteil</th></tr>
+            </thead>
+            <tbody>
+                {% for zeile in zeit_je_tag %}
+                    <tr>
+                        <td>{{ zeile.tags__name }}</td>
+                        <td class="zahl">{{ zeile.minuten }}</td>
+                        <td>
+                            <div class="bar-track">
+                                <div class="bar"
+                                     style="width: {% widthratio zeile.minuten max_tag_minuten 100 %}%"></div>
+                            </div>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>Noch keine Lernsitzungen mit Kategorie erfasst.</p>
+    {% endif %}
+
+    <h2>Lernzeit je Kalenderwoche</h2>
+    {% if max_wochen_minuten %}
+        <table class="dashboard-table">
+            <thead>
+                <tr><th>Woche ab</th><th>Minuten</th><th>Verlauf</th></tr>
+            </thead>
+            <tbody>
+                {% for zeile in zeit_je_woche %}
+                    <tr>
+                        <td>{{ zeile.woche|date:"d.m.Y" }}</td>
+                        <td class="zahl">{{ zeile.minuten }}</td>
+                        <td>
+                            <div class="bar-track">
+                                <div class="bar"
+                                     style="width: {% widthratio zeile.minuten max_wochen_minuten 100 %}%"></div>
+                            </div>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>Noch keine Lernsitzungen erfasst.</p>
+    {% endif %}
+{% endblock %}
