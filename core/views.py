@@ -1,3 +1,4 @@
+from django.contrib import messages
 from django.contrib.auth import login
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.shortcuts import get_object_or_404, redirect
@@ -20,6 +21,11 @@ from core.forms import (
     ResourceForm,
 )
 from core.models import Goal, LearningSession, Profile, Resource
+from core.services import ai_service
+
+# Session-Schluessel fuer die fluechtigen KI-Ergebnisse.
+AI_SUMMARY_KEY = "ai_summary"
+AI_NEXT_STEPS_KEY = "ai_next_steps"
 
 
 class HomeView(TemplateView):
@@ -127,6 +133,17 @@ class GoalDetailView(OwnGoalMixin, DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context["resource_form"] = self.resource_form or ResourceForm()
+
+        # KI-Ergebnisse nur zeigen, wenn sie zu genau diesem Goal gehoeren --
+        # sonst erschiene die Zusammenfassung von Goal A auch unter Goal B.
+        gespeichert = self.request.session.get(AI_SUMMARY_KEY)
+        if gespeichert and gespeichert.get("goal_id") == self.object.pk:
+            context["ai_summary"] = gespeichert.get("text")
+
+        gespeichert = self.request.session.get(AI_NEXT_STEPS_KEY)
+        if gespeichert and gespeichert.get("goal_id") == self.object.pk:
+            context["ai_next_steps"] = gespeichert.get("steps")
+
         return context
 
 
@@ -256,3 +273,54 @@ class ResourceDeleteView(LoginRequiredMixin, DeleteView):
 
     def get_success_url(self):
         return self.object.goal.get_absolute_url()
+
+
+# --- KI-Aktionen ------------------------------------------------------------
+
+
+class GoalAIActionMixin(LoginRequiredMixin):
+    """Gemeinsamer Ablauf beider KI-Aktionen.
+
+    Nur POST: ein GET laeuft in 405 und loest damit keine Aktion aus.
+    """
+
+    session_key = None
+
+    def run_service(self, goal):
+        raise NotImplementedError
+
+    def build_result(self, ergebnis, goal):
+        raise NotImplementedError
+
+    def post(self, request, pk):
+        # Der 404 faellt, bevor irgendein API-Aufruf stattfindet.
+        goal = get_object_or_404(Goal.objects.filter(user=request.user), pk=pk)
+
+        try:
+            ergebnis = self.run_service(goal)
+        except ai_service.AIServiceError as fehler:
+            messages.error(request, str(fehler))
+        else:
+            request.session[self.session_key] = self.build_result(ergebnis, goal)
+
+        return redirect(goal.get_absolute_url())
+
+
+class GoalSummaryView(GoalAIActionMixin, View):
+    session_key = AI_SUMMARY_KEY
+
+    def run_service(self, goal):
+        return ai_service.generate_summary(goal)
+
+    def build_result(self, ergebnis, goal):
+        return {"goal_id": goal.pk, "text": ergebnis}
+
+
+class GoalNextStepsView(GoalAIActionMixin, View):
+    session_key = AI_NEXT_STEPS_KEY
+
+    def run_service(self, goal):
+        return ai_service.suggest_next_steps(goal)
+
+    def build_result(self, ergebnis, goal):
+        return {"goal_id": goal.pk, "steps": ergebnis}

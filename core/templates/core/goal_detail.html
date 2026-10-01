@@ -35,6 +35,35 @@
         <p>Noch keine Lernsitzungen zu diesem Ziel.</p>
     {% endif %}
 
+    <h2>KI-Unterstuetzung</h2>
+    <form action="{% url 'core:goal_ai_summary' goal.pk %}" method="post">
+        {% csrf_token %}
+        <button type="submit">Zusammenfassung generieren</button>
+    </form>
+    <form action="{% url 'core:goal_ai_next_steps' goal.pk %}" method="post">
+        {% csrf_token %}
+        <button type="submit">Naechste Schritte vorschlagen</button>
+    </form>
+
+    {# Ergebnisbereiche erscheinen erst nach der ersten Nutzung. #}
+    {% if ai_summary %}
+        <section class="ai-summary">
+            <h3>Fortschrittszusammenfassung</h3>
+            <p>{{ ai_summary|linebreaksbr }}</p>
+        </section>
+    {% endif %}
+
+    {% if ai_next_steps %}
+        <section class="ai-next-steps">
+            <h3>Naechste Lernschritte</h3>
+            <ol>
+                {% for schritt in ai_next_steps %}
+                    <li>{{ schritt }}</li>
+                {% endfor %}
+            </ol>
+        </section>
+    {% endif %}
+
     <h2>Ressourcen</h2>
     {% include "core/_resource_list.html" %}
 

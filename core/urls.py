@@ -44,4 +44,15 @@ urlpatterns = [
         views.ResourceDeleteView.as_view(),
         name="resource_delete",
     ),
+    # KI-Aktionen
+    path(
+        "goals/<int:pk>/ai/summary/",
+        views.GoalSummaryView.as_view(),
+        name="goal_ai_summary",
+    ),
+    path(
+        "goals/<int:pk>/ai/next-steps/",
+        views.GoalNextStepsView.as_view(),
+        name="goal_ai_next_steps",
+    ),
 ]

@@ -106,3 +106,14 @@ USE_TZ = True
 STATIC_URL = "static/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+
+# --- OpenAI -----------------------------------------------------------------
+# Der Schluessel kommt ausschliesslich aus der Umgebung -- kein Default, kein
+# Fallback-Literal. Fehlt er, schaltet der Service selbsttaetig in den
+# Mock-Modus, statt beim Start zu scheitern.
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_TIMEOUT_SECONDS = float(os.environ.get("OPENAI_TIMEOUT_SECONDS", "20"))
+AI_MOCK_MODE = os.environ.get("AI_MOCK_MODE", "") == "True"

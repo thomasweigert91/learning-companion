@@ -1,154 +1,164 @@
-# Implementierungs-Plan: Resource Library — Inline-Anlegen, Typ-Badges und Löschen
+# Implementierungs-Plan: AI-powered summary and next steps — Service-Layer, Mock-Strategie und Fehlerbehandlung
 
 ## 1. Betroffene Dateien
 
+**Neu — Service-Layer**
+
+- Neu: `core/services/__init__.py`
+- Neu: `core/services/ai_service.py` — gesamte OpenAI-Anbindung, Prompt-Bau, Fehler-Übersetzung, Mock-Modus
+
 **Ändern**
 
-- Ändern: `core/models.py` — Modell `Resource` ergänzen
-- Ändern: `core/forms.py` — `ResourceForm` ergänzen
-- Ändern: `core/views.py` — `GoalDetailView` um das Inline-Formular erweitern, `ResourceCreateView` und `ResourceDeleteView` ergänzen
+- Ändern: `requirements.txt` — `openai` ergänzen
+- Ändern: `.env.example` — `OPENAI_API_KEY`, `OPENAI_MODEL`, `AI_MOCK_MODE` dokumentieren
+- Ändern: `learning_companion/settings.py` — die drei Einstellungen aus der Umgebung lesen
+- Ändern: `core/views.py` — `GoalSummaryView` und `GoalNextStepsView` ergänzen, `GoalDetailView` um die Ergebnisse aus der Session erweitern
 - Ändern: `core/urls.py` — zwei Routen ergänzen
-- Ändern: `core/admin.py` — `Resource` registrieren
-- Ändern: `core/templates/core/goal_detail.html` — Ressourcen-Liste mit Badges, Inline-Formular, Lösch-Buttons
-- Ändern: `core/templates/base.html` — minimales Badge-Styling im `<head>`
+- Ändern: `core/templates/base.html` — Django-Messages ausgeben (bislang nicht vorhanden)
+- Ändern: `core/templates/core/goal_detail.html` — zwei Aktions-Formulare und die Ergebnisbereiche
 
-**Neu**
+**Neu — Tests**
 
-- Neu: `core/migrations/0003_resource.py` (per `makemigrations` erzeugt, eingecheckt)
-- Neu: `core/templates/core/_resource_list.html` — Teil-Template für die Ressourcen-Liste inkl. Badge und Lösch-Formular
-- Neu: `core/tests/test_resources.py` — Modell, Anlegen, Anzeige und Badge
-- Neu: `core/tests/test_resource_scoping.py` — Mandantentrennung A gegen B
+- Neu: `core/tests/test_ai_service.py` — Service im Mock-Modus, Prompt-Inhalt, Fehler-Übersetzung
+- Neu: `core/tests/test_ai_views.py` — beide Views, Anzeige, Fehlerpfade, Scoping
 
-**Unverändert:** `learning_companion/settings.py`, `requirements.txt`, `core/signals.py`, `core/apps.py` sowie alle bestehenden Testmodule aus Feature 1 und 2.
+**Unverändert:** `core/models.py`, `core/forms.py`, `core/admin.py`, alle Migrationen (dieses Feature bringt **kein** neues Modell mit) sowie alle bestehenden Testmodule.
 
 ## 2. Datenmodelle & Migrationen
 
-### `Resource` (`core/models.py`)
+**Es werden keine Modelle geändert und keine Migration erzeugt.**
 
-Typ über `models.TextChoices`, konsistent zu `Goal.Status`:
+Das ist eine bewusste Entscheidung und zugleich ein Akzeptanzkriterium: Generierte Zusammenfassungen sind Momentaufnahmen über einen Datenbestand, der sich mit der nächsten Lernsitzung ändert. Würden sie persistiert, entstünde sofort die Frage nach Invalidierung und Veralterung — ein Problem, das das Ticket nicht stellt.
 
-```python
-class Type(models.TextChoices):
-    ARTICLE = "article", "Artikel"
-    VIDEO = "video", "Video"
-    REPO = "repo", "Repository"
-    DOC = "doc", "Dokumentation"
+**Ablage der Ergebnisse: Django-Session.**
+
+```
+request.session["ai_summary"]     = {"goal_id": <pk>, "text": "..."}
+request.session["ai_next_steps"]  = {"goal_id": <pk>, "steps": ["...", "...", "..."]}
 ```
 
-| Feld | Typ | Optionen |
-| --- | --- | --- |
-| `goal` | `ForeignKey` | `Goal`, `on_delete=models.CASCADE`, `related_name="resources"` |
-| `url` | `URLField` | `max_length=500` |
-| `title` | `CharField` | `max_length=200` |
-| `type` | `CharField` | `max_length=20`, `choices=Type.choices`, `default=Type.ARTICLE` |
-| `created_at` | `DateTimeField` | `auto_now_add=True` |
+Der Schlüssel trägt die `goal_id` mit, damit `GoalDetailView` ein Ergebnis nur dann anzeigt, wenn es zum gerade betrachteten Goal gehört. Ohne diesen Abgleich würde eine Zusammenfassung von Goal A auch unter Goal B erscheinen. Da die Session serverseitig gehalten wird und an den angemeldeten Nutzer gebunden ist, verlässt kein Ergebnis den Besitzer.
 
-- `Meta.ordering = ["-created_at", "-pk"]`
-- `__str__` → `self.title`
+**Begrenzung des Prompt-Kontexts.** Es werden höchstens die jüngsten 10 Lernsitzungen und 20 Ressourcen übergeben (Konstanten `MAX_SESSIONS` und `MAX_RESOURCES` im Service). Ohne Obergrenze würde der Prompt mit der Datenmenge wachsen und irgendwann das Kontextfenster oder das Kostenbudget sprengen.
 
-Zur Validierung: `URLField` bringt den `URLValidator` mit, der in `full_clean()` greift und `"kein-link"` mit einem Fehler auf `url` ablehnt. `max_length=500` statt der Default-200, weil Doku- und Repo-Links mit Ankern und Query-Parametern schnell lang werden. Die `choices`-Validierung auf `type` leistet ebenfalls `full_clean()`.
+**Settings** (`learning_companion/settings.py`):
 
-Der Besitz wird **nicht** am Modell gespeichert, sondern immer über `goal__user` aufgelöst — identisch zur Lösung bei `LearningSession`. Die Kaskade beim Löschen eines Goals kommt aus `on_delete=models.CASCADE`.
+```python
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_TIMEOUT_SECONDS = float(os.environ.get("OPENAI_TIMEOUT_SECONDS", "20"))
+AI_MOCK_MODE = os.environ.get("AI_MOCK_MODE", "") == "True"
+```
 
-### Migration
-
-- `python manage.py makemigrations core` erzeugt `0003_resource.py` (eine `CreateModel`-Operation).
-- Danach `python manage.py migrate`.
-- Keine Datenmigration: die Tabelle ist neu, bestehende Daten bleiben unberührt.
-- Abschließend `makemigrations --check --dry-run` als Nachweis der Deckungsgleichheit.
+Kein Default-Key, kein Fallback-Literal. Fehlt der Key, bleibt der Wert leer — der Service schaltet dann selbsttätig in den Mock-Modus, statt beim Start zu scheitern. `manage.py check` läuft damit auch ohne Key durch.
 
 ## 3. Schrittweise Umsetzung
 
-- [ ] **Schritt 1: Modell und Migration** — `Resource` inkl. innerer `Type`-TextChoices-Klasse, `__str__` und `Meta.ordering` in `core/models.py` ergänzen; `core/admin.py` um `ResourceAdmin` erweitern (`list_display` mit Titel, Goal und Typ, `list_filter` auf `type`, `search_fields` auf Titel und URL). Dann `makemigrations core` und `migrate`. Abnahme: `manage.py check` Exit-Code 0, `0003_resource.py` existiert.
+- [ ] **Schritt 1: Abhängigkeit und Konfiguration** — `openai>=1.40,<2.0` in `requirements.txt` eintragen und im `.venv` installieren; `.env.example` um die drei Variablen ergänzen — `OPENAI_API_KEY` bleibt dort **leer**, es wird bewusst kein realistisch aussehender Beispielschlüssel hinterlegt, auch kein erfundener; die vier Einstellungen in `settings.py` ergänzen. Abnahme: `manage.py check` Exit-Code 0 **ohne** gesetzten Key.
 
-- [ ] **Schritt 2: Formular** — `ResourceForm(ModelForm)` in `core/forms.py` mit `fields = ["url", "title", "type"]`. Das Feld `goal` ist bewusst **nicht** enthalten: Das Ziel-Goal bestimmt die View aus der URL gegen das gescopte Queryset, damit es nicht per POST überschreibbar ist. Deutsche Labels und ein `URLInput`-Widget mit Platzhalter.
-
-- [ ] **Schritt 3: Inline-Formular in der Goal-Detailseite** — `GoalDetailView.get_context_data()` legt `resource_form` in den Kontext. Damit der Fehlerfall das ausgefüllte Formular zurückgeben kann, ohne die Detailseite zu duplizieren, bekommt die View ein optionales Attribut: Ist `self.resource_form` bereits gesetzt (von der Create-View bei Validierungsfehlern), wird dieses verwendet, sonst ein frisches `ResourceForm()`. Die Ressourcen selbst kommen über `goal.resources.all` direkt aus der Beziehung.
-
-- [ ] **Schritt 4: `ResourceCreateView`** — Eine schlanke `View` mit `LoginRequiredMixin`, die ausschließlich `post()` implementiert (ein GET auf die Anlege-URL hat keinen eigenen Zweck, das Formular lebt auf der Detailseite). Ablauf:
-  1. Ziel-Goal per `get_object_or_404(Goal.objects.filter(user=request.user), pk=pk)` holen — ein fremder PK ergibt damit 404, bevor irgendetwas geschrieben wird.
-  2. `ResourceForm(request.POST)` binden; bei `is_valid()` `form.instance.goal = goal` setzen, speichern und per `redirect()` auf `goal.get_absolute_url()` zurückleiten (Status 302).
-  3. Bei Fehlern die Goal-Detailseite mit dem fehlerbehafteten Formular erneut rendern (Status 200), indem `GoalDetailView` mit gesetztem `resource_form` aufgerufen wird. Die bereits vorhandenen Ressourcen bleiben dadurch sichtbar.
+- [ ] **Schritt 2: Service-Layer, Gerüst und Mock-Modus** — `core/services/ai_service.py` anlegen mit:
+  - `class AIServiceError(Exception)` — die einzige Exception, die den Service verlässt.
+  - `def is_mock_mode()` → `settings.AI_MOCK_MODE or not settings.OPENAI_API_KEY`. Damit ist der Mock aktiv, sobald er eingeschaltet ist **oder** kein Key vorliegt; die Anwendung bleibt lokal ohne Key benutzbar.
+  - Konstanten `MAX_SESSIONS = 10`, `MAX_RESOURCES = 20`.
   
-  Weil `goal` kein Formularfeld ist und das Goal aus dem gescopten Queryset stammt, ist ein mitgeschicktes `goal=<fremde_id>` im POST wirkungslos.
+  Der Mock liefert deterministische, aus den echten Goal-Daten abgeleitete Ergebnisse (Titel, Anzahl Sessions, Gesamtdauer), damit die Oberfläche im Mock-Betrieb plausibel aussieht und nicht nur Platzhalter zeigt.
 
-- [ ] **Schritt 5: `ResourceDeleteView`** — `DeleteView` mit `LoginRequiredMixin` und `get_queryset()` → `Resource.objects.filter(goal__user=self.request.user).select_related("goal")`. Ein fremder PK ist im Queryset nicht enthalten und ergibt in `get_object()` automatisch 404 — für GET (Bestätigungsseite) wie POST (Löschen). `get_success_url()` liefert `self.object.goal.get_absolute_url()`, führt also zurück auf die Goal-Detailseite. Da Django beim Löschen `self.object` vor dem Redirect auflöst, wird das Goal in `select_related` mitgeladen.
+- [ ] **Schritt 3: Prompt-Bau** — Zwei private Funktionen `_build_summary_prompt(goal)` und `_build_next_steps_prompt(goal)`. Beide lesen ausschließlich über die Beziehungen des übergebenen Goals (`goal.sessions.all()[:MAX_SESSIONS]`, `goal.resources.all()[:MAX_RESOURCES]`) — es gibt im Service keine einzige Query, die nicht von diesem Goal ausgeht. Daraus folgt strukturell, dass keine Fremddaten in den Prompt geraten können; ein Test prüft es zusätzlich explizit.
   
-  Gelöscht wird nur per POST; das bringt `DeleteView` von Haus aus mit. Eine eigene Bestätigungsseite ist nötig, weil ein GET sonst ins Leere liefe — `core/templates/core/resource_confirm_delete.html`.
+  Die Prompts fordern deutschsprachige Ausgabe an. Für die nächsten Schritte wird eine zeilenweise Liste angefordert und die Antwort serverseitig in eine Python-Liste zerlegt und auf 2 bis 3 Einträge begrenzt — die Längenzusage wird also nicht dem Modell überlassen, sondern im Code durchgesetzt.
 
-- [ ] **Schritt 6: URLs** — `core/urls.py` um zwei Routen erweitern:
-  - `goals/<int:pk>/resources/add/` → `ResourceCreateView`, Name `resource_create` (der PK adressiert das **Goal**).
-  - `resources/<int:pk>/delete/` → `ResourceDeleteView`, Name `resource_delete` (der PK adressiert die **Resource**).
-
-- [ ] **Schritt 7: Templates** — `goal_detail.html` bekommt einen Abschnitt "Ressourcen", der das Teil-Template `_resource_list.html` einbindet, sowie darunter das Inline-Formular (POST auf `core:resource_create` mit `{% csrf_token %}`, sichtbare `{{ resource_form.errors }}`). `_resource_list.html` rendert je Ressource: Titel als Link auf `resource.url` (mit `rel="noopener noreferrer"` und `target="_blank"`), ein `<span class="badge badge-{{ resource.type }}">{{ resource.get_type_display }}</span>` sowie ein POST-Formular mit Lösch-Button. Bei leerer Liste ein Hinweistext. In `base.html` kommt ein kleiner `<style>`-Block mit den vier `badge-*`-Klassen (unterschiedliche Hintergrundfarben) — bewusst minimal, kein CSS-Framework.
+- [ ] **Schritt 4: API-Aufruf und Fehler-Übersetzung** — `_call_openai(prompt)` kapselt den einzigen SDK-Kontakt:
+  - Client als `OpenAI(api_key=settings.OPENAI_API_KEY, timeout=settings.OPENAI_TIMEOUT_SECONDS, max_retries=1)`. Explizites Timeout, damit ein hängender Aufruf keinen Request-Thread dauerhaft blockiert; `max_retries=1`, damit ein Rate-Limit nicht zu langen Wartezeiten im Request führt.
+  - Aufruf über `client.chat.completions.create(model=settings.OPENAI_MODEL, messages=[...])`.
+  - `except APITimeoutError` → `AIServiceError` mit der Meldung zum Timeout.
+  - `except RateLimitError` → `AIServiceError` mit eigener Meldung.
+  - `except Exception` → `AIServiceError` mit einer generischen Meldung. Der ursprüngliche Fehler wird per `logger.exception()` protokolliert, aber **nicht** in die Nutzermeldung übernommen — so landen weder Stacktrace noch SDK-Rohtext noch ein Key-Fragment in der Oberfläche.
   
-  Zur Badge-Klasse: Sie wird direkt aus `resource.type` gebildet, das Label separat über `get_type_display`. Damit erfüllt ein Template beide Kriterien (technische Klasse für die Optik, lesbares Label für den Text), ohne eine Zuordnungstabelle im Template zu pflegen.
+  Der Import der SDK-Fehlertypen erfolgt modulweit; das SDK ist damit ausschließlich in dieser Datei bekannt.
 
-- [ ] **Schritt 8: Tests** — Die beiden neuen Testmodule gemäß Abschnitt 4 schreiben.
+- [ ] **Schritt 5: Öffentliche Service-Funktionen** — `generate_summary(goal)` → `str` und `suggest_next_steps(goal)` → `list[str]`. Beide prüfen zuerst `is_mock_mode()` und liefern in dem Fall das Mock-Ergebnis, ohne das Netzwerk zu berühren. Beide verändern die Datenbank nicht.
 
-- [ ] **Schritt 9: Gesamtvalidierung** — `manage.py check`, `makemigrations --check --dry-run`, `manage.py test` (63 bestehende plus neue) und `.\.workflow\hooks\validate_code.ps1`; alles mit Exit-Code 0.
+- [ ] **Schritt 6: Views** — In `core/views.py` ein gemeinsames `GoalAIActionMixin` mit `LoginRequiredMixin`, das in `post()`:
+  1. das Goal per `get_object_or_404(Goal.objects.filter(user=request.user), pk=pk)` auflöst — der 404 fällt also **vor** jedem API-Aufruf;
+  2. die jeweilige Service-Funktion aufruft;
+  3. das Ergebnis mit `goal_id` in die Session legt;
+  4. bei `AIServiceError` `messages.error(request, str(fehler))` setzt;
+  5. in beiden Fällen auf `goal.get_absolute_url()` zurückleitet (302).
+  
+  Daraus abgeleitet `GoalSummaryView` und `GoalNextStepsView`, die sich nur in Service-Funktion und Session-Schlüssel unterscheiden. Nur `post()` wird implementiert — ein GET läuft damit in 405 und löst keine Aktion aus.
+  
+  `GoalDetailView.get_context_data()` liest beide Session-Einträge und legt sie nur dann in den Kontext, wenn die hinterlegte `goal_id` zum aktuellen Goal passt.
+
+- [ ] **Schritt 7: URLs** — `goals/<int:pk>/ai/summary/` → `goal_ai_summary` und `goals/<int:pk>/ai/next-steps/` → `goal_ai_next_steps`.
+
+- [ ] **Schritt 8: Templates** — In `base.html` einen Messages-Block ergänzen (`{% if messages %}` mit `message.tags` als CSS-Klasse) sowie Styling für `.messages .error`. In `goal_detail.html` einen Abschnitt mit den beiden POST-Formularen (je `{% csrf_token %}`) und darunter die Ergebnisbereiche, jeweils in `{% if %}` gekapselt — vor der ersten Nutzung erscheint damit kein leerer Rumpf. Die nächsten Schritte werden als `<ol>` gerendert.
+
+- [ ] **Schritt 9: Mock-Erzwingung in der Testsuite** — Damit kein Testlauf je das Netz berührt, auch nicht auf einem Entwicklerrechner mit gesetztem Key: Beide neuen Testmodule tragen `@override_settings(AI_MOCK_MODE=True, OPENAI_API_KEY="")` auf Klassenebene. Die Tests, die Fehlerpfade prüfen, patchen zusätzlich gezielt `_call_openai` und schalten den Mock dafür ab.
+
+- [ ] **Schritt 10: Tests** — Die beiden Testmodule gemäß Abschnitt 4 schreiben.
+
+- [ ] **Schritt 11: Gesamtvalidierung** — `manage.py check`, `makemigrations --check --dry-run`, `manage.py test` (90 bestehende plus neue) und `.\.workflow\hooks\validate_code.ps1`; alles mit Exit-Code 0. Zusätzlich eine Repository-Suche nach `sk-` als Nachweis, dass kein Schlüssel-Literal eingecheckt ist.
 
 ## 4. Validierung & Test-Strategie
 
-### `core/tests/test_resources.py`
+### `core/tests/test_ai_service.py`
 
-Modell:
+Mock-Modus:
 
-- `test_resource_str_returns_title`
-- `test_default_type_is_article` — ohne `type` angelegt → `article`.
-- `test_all_four_types_are_valid` — `full_clean()` wirft für keinen der vier Werte.
-- `test_invalid_type_rejected_by_full_clean` — `type="podcast"` → `ValidationError` mit Schlüssel `type`.
-- `test_invalid_url_rejected_by_full_clean` — `url="kein-link"` → `ValidationError` mit Schlüssel `url`.
-- `test_deleting_goal_cascades_to_resources` — nach `goal.delete()` ist `Resource.objects.filter(goal_id=alte_id).count() == 0`.
+- `test_mock_mode_active_without_api_key` — ohne Key ist `is_mock_mode()` wahr, auch wenn `AI_MOCK_MODE` aus ist.
+- `test_mock_mode_active_when_explicitly_enabled`
+- `test_generate_summary_returns_text_in_mock_mode` — nicht leer, enthält den Goal-Titel.
+- `test_suggest_next_steps_returns_two_to_three_items` — Liste, Länge zwischen 2 und 3, alle Einträge nicht leer.
+- `test_service_does_not_touch_database` — die Objektzahlen von `Goal`, `LearningSession` und `Resource` sind vor und nach beiden Aufrufen identisch.
 
-Inline-Anlegen:
+Prompt-Inhalt (der sicherheitsrelevante Teil):
 
-- `test_goal_detail_contains_resource_form` — die Detailseite liefert `resource_form` im Kontext und enthält ein `csrfmiddlewaretoken`.
-- `test_create_resource_redirects_to_goal_detail` — gültiger POST → 302 auf die Goal-Detailseite, Ressource am richtigen Goal.
-- `test_create_resource_appears_on_detail_page` — nach dem Anlegen ist der Titel auf der Detailseite sichtbar.
-- `test_create_resource_with_invalid_url_shows_errors` — Status 200, `"url"` in den Formularfehlern, `Resource.objects.count()` unverändert.
-- `test_create_resource_with_empty_title_shows_errors` — Status 200, `"title"` in den Fehlern, nichts angelegt.
-- `test_invalid_post_keeps_existing_resources_visible` — ein fehlerhafter POST darf die bereits vorhandenen Ressourcen auf der Seite nicht verschwinden lassen.
-- `test_goal_field_in_post_is_ignored` — POST mit zusätzlichem `goal=<pk_eines_anderen_eigenen_goals>` → die Ressource hängt am Goal aus der URL.
+- `test_prompt_contains_only_own_goal_data` — zwei Nutzer mit je einem Goal, Sessions und Ressourcen mit eindeutigen Markertexten. Der Prompt für A's Goal enthält A's Marker und **keinen** Marker von B.
+- `test_prompt_limits_number_of_sessions` — 25 Sessions anlegen, prüfen dass höchstens `MAX_SESSIONS` Datumsangaben im Prompt vorkommen.
+- `test_prompt_contains_resources` — Ressourcentitel und -typ sind enthalten.
 
-Anzeige und Badge:
+Fehler-Übersetzung (mit abgeschaltetem Mock und gepatchtem SDK):
 
-- `test_resource_badge_class_matches_type` — für jeden der vier Typen (`subTest`) prüfen, dass `badge-<type>` im HTML vorkommt.
-- `test_resource_type_label_is_human_readable` — `"Repository"` erscheint, nicht `"repo"`.
-- `test_empty_resource_list_shows_hint` — Goal ohne Ressourcen → Hinweistext, kein leeres Listengerüst.
+- `test_timeout_is_translated_to_service_error` — `APITimeoutError` aus dem SDK → `AIServiceError`.
+- `test_rate_limit_is_translated_to_service_error` — `RateLimitError` → `AIServiceError`.
+- `test_unexpected_exception_is_translated_to_service_error` — ein beliebiger `RuntimeError` → `AIServiceError`.
+- `test_error_message_does_not_leak_internals` — die Meldung enthält weder `"sk-"` noch `"Traceback"` noch den rohen Ausnahmetext.
 
-Löschen:
+### `core/tests/test_ai_views.py`
 
-- `test_delete_resource_removes_it_and_redirects` — POST → Redirect auf die Goal-Detailseite, Datensatz weg.
-- `test_delete_resource_keeps_goal` — das Goal existiert nach dem Löschen der Ressource weiterhin.
-- `test_delete_requires_post` — GET auf die Lösch-URL liefert 200 (Bestätigung) und löscht nicht.
+Alle Klassen mit `@override_settings(AI_MOCK_MODE=True, OPENAI_API_KEY="")`.
 
-### `core/tests/test_resource_scoping.py`
+Kein Netzwerk:
 
-Zwei Nutzer A und B, je ein Goal mit je einer Ressource.
+- `test_no_external_call_during_tests` — `core.services.ai_service._call_openai` wird durch ein Double ersetzt, das bei jedem Aufruf `self.fail()` auslöst; danach werden beide Aktionen ausgeführt. Schlägt der Test nicht fehl, hat kein echter Aufruf stattgefunden.
 
-Anonymer Zugriff:
+Aktionen und Anzeige:
 
-- `test_resource_create_requires_login` — POST ohne Login → `assertRedirects` auf `/accounts/login/?next=...`.
-- `test_resource_delete_requires_login` — analog.
+- `test_summary_action_redirects_to_goal_detail` — POST → 302 auf die Detailseite.
+- `test_summary_result_visible_on_detail_page` — nach dem POST enthält die Detailseite den generierten Text.
+- `test_next_steps_action_redirects_and_shows_list` — nach dem POST sind 2 bis 3 Listeneinträge im Kontext und im HTML.
+- `test_actions_not_triggered_by_get` — GET auf beide URLs liefert 405 und legt nichts in die Session.
+- `test_no_result_block_before_first_use` — die frische Detailseite enthält weder Zusammenfassungs- noch Next-Steps-Bereich.
+- `test_result_of_other_goal_not_shown` — nach einer Zusammenfassung zu Goal 1 zeigt die Detailseite von Goal 2 (desselben Nutzers) diese **nicht** an.
 
-Fremdzugriff:
+Fehlerpfade (Mock abgeschaltet, Service-Funktion wirft `AIServiceError`):
 
-- `test_cannot_add_resource_to_foreign_goal` — A postet auf die Anlege-URL von B's Goal → Status 404 **und** `Resource.objects.count()` unverändert. Beides zusammen, weil ein 404 allein nicht belegt, dass nichts geschrieben wurde.
-- `test_cannot_delete_foreign_resource` — A postet auf die Lösch-URL von B's Ressource → 404, und `Resource.objects.filter(pk=b_resource.pk).exists()` ist weiterhin `True`.
-- `test_cannot_get_delete_page_of_foreign_resource` — GET auf dieselbe URL → 404, Titel von B nicht in der Response.
-- `test_foreign_goal_detail_still_404` — A ruft B's Goal-Detailseite auf → 404; die Ressource von B wird nicht ausgegeben.
-- `test_foreign_resources_not_on_own_goal_detail` — auf A's eigener Detailseite taucht B's Ressourcentitel nicht auf.
+- `test_timeout_shows_message_and_redirects` — 302, kein 500er, die Meldung erscheint nach dem Folge-GET in der Oberfläche.
+- `test_rate_limit_shows_message`
+- `test_unexpected_error_shows_message`
+- `test_failed_action_leaves_no_result_in_session` — nach einem Fehler steht kein halbes Ergebnis in der Session.
 
-Gegenprobe:
+Scoping:
 
-- `test_own_resource_create_and_delete_work` — A legt am eigenen Goal an und löscht wieder; beides erfolgreich. Ohne diesen Test wären die 404-Kriterien auch durch eine global kaputte View erfüllt.
+- `test_ai_actions_require_login` — beide URLs, anonymer POST → `assertRedirects` auf die Login-Seite.
+- `test_ai_actions_on_foreign_goal_return_404` — A postet auf beide Aktionen für B's Goal → 404.
+- `test_foreign_goal_action_does_not_call_service` — zusätzlich belegt, dass dabei die Service-Funktion gar nicht erst aufgerufen wurde (Double zählt Aufrufe, erwartet 0). Der 404 fällt also vor dem API-Kontakt.
+- `test_own_goal_actions_work` — Gegenprobe, damit die 404-Tests nicht durch eine global kaputte View trivial erfüllt sind.
 
 ### Testdaten
 
-- `setUpTestData` legt je Testklasse die nötigen Nutzer, Goals und Ressourcen an; Profile entstehen weiterhin automatisch per Signal.
-- URLs in Testdaten sind valide (`https://example.com/...`), ungültige Werte nur dort, wo gezielt die Validierung geprüft wird.
-- Keine Fixture-Dateien, keine neuen Abhängigkeiten.
+- `setUpTestData` legt Nutzer, Goals, Sessions und Ressourcen mit eindeutigen Markertexten an, damit Prompt-Inhalte eindeutig zuordenbar sind.
+- Keine Fixture-Dateien. Kein Test benötigt einen API-Key oder Netzwerkzugang.
 
 ### Auszuführende Kommandos
 
@@ -159,6 +169,14 @@ python manage.py test
 .\.workflow\hooks\validate_code.ps1
 ```
 
+Zusätzlich als Sicherheitsnachweis:
+
+```
+git grep -n "sk-" -- . ":(exclude).venv"
+```
+
 ### Definition of Done
 
-Alle vier Kommandos enden mit Exit-Code 0, die 63 Tests aus Feature 1 und 2 laufen unverändert mit durch, `core/migrations/0003_resource.py` ist eingecheckt, und jedes der 25 Akzeptanzkriterien aus `.workflow/artifacts/ticket.md` ist durch mindestens einen benannten Test oder einen Kommando-Exit-Code belegt.
+Alle vier Kommandos enden mit Exit-Code 0, die 90 Tests aus Feature 1 bis 3 laufen unverändert mit durch, es entsteht **keine** neue Migration, die Repository-Suche nach einem Schlüssel-Literal bleibt ohne Treffer, und jedes der 31 Akzeptanzkriterien aus `.workflow/artifacts/ticket.md` ist durch mindestens einen benannten Test oder einen Kommando-Exit-Code belegt.
+
+**Vorbehalt:** Der echte API-Pfad ist mangels Schlüssel in dieser Umgebung nicht end-to-end verifizierbar. Abgenommen werden Mock-Betrieb, Prompt-Aufbau und Fehlerbehandlung; die Korrektheit des SDK-Aufrufs gegen die Live-API bleibt offen und ist im Review als solche festzuhalten.

@@ -17,6 +17,12 @@
         .badge-video   { background: #c53030; }
         .badge-repo    { background: #2f855a; }
         .badge-doc     { background: #6b46c1; }
+
+        .messages { list-style: none; padding: 0; }
+        .messages li { padding: 0.5em 0.8em; border-radius: 0.3em; margin: 0.3em 0; }
+        .messages .error   { background: #fed7d7; color: #742a2a; }
+        .messages .success { background: #c6f6d5; color: #22543d; }
+        .messages .info    { background: #bee3f8; color: #2a4365; }
     </style>
 </head>
 <body>
@@ -41,6 +47,14 @@
 </header>
 
 <main>
+    {% if messages %}
+        <ul class="messages">
+            {% for message in messages %}
+                <li class="{{ message.tags }}">{{ message }}</li>
+            {% endfor %}
+        </ul>
+    {% endif %}
+
     {% block content %}{% endblock %}
 </main>
 </body>

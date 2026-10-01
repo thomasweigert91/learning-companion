@@ -1,84 +1,101 @@
-# Ticket: Resource Library — Lernressourcen an Goals anhängen, typisiert anzeigen und löschen
+# Ticket: AI-powered summary and next steps — OpenAI-Integration für Fortschritt und Lernempfehlungen
 
 ## 1. Problem / Ziel
 
-Nutzer können Lernziele (`Goal`) anlegen und Lernsitzungen (`LearningSession`) dokumentieren. Was fehlt, ist der Ort für das Material: Artikel, Videos, Repositories und Dokumentationen, die zu einem Ziel gehören, liegen bislang außerhalb der Anwendung.
+Nutzer erfassen Lernziele, dokumentieren Lernsitzungen und hängen Ressourcen an. Was daraus entsteht, ist eine wachsende Datenspur, die niemand auswertet: Wer zwölf Sessions an einem Ziel hat, sieht eine Liste — keine Einordnung, wo er steht und was als Nächstes sinnvoll wäre.
 
-Dieses Ticket ergänzt eine Entität **Resource** mit URL, Titel und Typ, die an genau ein Goal gebunden ist. Der Arbeitsablauf soll ohne Seitenwechsel funktionieren:
+Dieses Ticket bindet die OpenAI-API an und ergänzt zwei Aktionen auf der Goal-Detailseite:
 
-1. Auf der Goal-Detailseite steht ein **Inline-Formular**, über das eine Ressource direkt angehängt wird.
-2. Alle Ressourcen des Goals werden ebendort angezeigt, **nach Typ optisch hervorgehoben** (Badge).
-3. Jede Ressource lässt sich von dort aus **löschen**.
+1. **Generate summary** — sammelt die jüngsten `LearningSession`s und `Resource`s des Goals, schickt sie an `gpt-4o-mini` und zeigt eine strukturierte Fortschrittszusammenfassung.
+2. **Suggest next steps** — schickt das Goal samt bisherigen Sessions an die API und liefert 2–3 konkrete nächste Lernschritte als Liste.
 
-Zentrale Anforderung bleibt die Mandantentrennung: Ressourcen hängen an Goals, Goals gehören Nutzern. Ein Nutzer darf Ressourcen **ausschließlich an eigene Goals anhängen** und **ausschließlich Ressourcen eigener Goals löschen oder sehen**. Der Besitz wird dabei nicht am Resource-Objekt gespeichert, sondern über die Kette `resource → goal → user` aufgelöst — analog zum bereits umgesetzten Session-Scoping.
+Drei Randbedingungen sind so wichtig wie die Features selbst:
+
+- Der **API-Key darf nirgends im Code oder Repository stehen**, sondern wird ausschließlich über Umgebungsvariablen geladen.
+- Die Testsuite darf **keine externen API-Calls** auslösen und muss ohne API-Key vollständig durchlaufen. Dasselbe gilt für die lokale Entwicklung ohne Key.
+- **Netzwerkfehler, Timeouts und Rate-Limits dürfen die Anwendung nicht zum Absturz bringen**, sondern erzeugen eine verständliche Meldung über das Django-Messages-Framework.
+
+Das Scoping bleibt unverändert streng: Beide Aktionen arbeiten ausschließlich auf eigenen Goals.
 
 ## 2. Akzeptanzkriterien
 
-**Datenmodell Resource**
+**Konfiguration und Schlüsselverwaltung**
 
-- [ ] Es existiert ein Modell `Resource` mit den Feldern: `goal` (ForeignKey auf `Goal`, `on_delete=CASCADE`, `related_name="resources"`), `url` (URLField, Pflichtfeld), `title` (CharField, Pflichtfeld), `type` (CharField mit `choices`) und `created_at` (`auto_now_add`).
-- [ ] `type` erlaubt ausschließlich die Werte `article`, `video`, `repo` und `doc`; der Default beim Anlegen ist `article`. Ein abweichender Wert wird von `full_clean()` abgelehnt.
-- [ ] `url` wird validiert: eine Eingabe ohne gültiges Schema (z. B. `"kein-link"`) wird von `full_clean()` mit einem Fehler auf dem Feld `url` abgelehnt.
-- [ ] Das Löschen eines Goals löscht dessen Ressourcen mit (Test: nach `goal.delete()` ist `Resource.objects.filter(goal_id=<alte_id>).count() == 0`).
-- [ ] `Resource.__str__()` liefert den Titel.
+- [ ] Das Paket `openai` ist in `requirements.txt` mit Versionsgrenze eingetragen und im `.venv` installiert.
+- [ ] `OPENAI_API_KEY` wird ausschließlich über `os.environ` gelesen; eine Suche über das gesamte Repository (ohne `.venv/`) nach einem Schlüssel-Literal (`sk-`) liefert **keinen** Treffer.
+- [ ] `.env.example` dokumentiert `OPENAI_API_KEY`, `OPENAI_MODEL` und den Mock-Schalter mit unverfänglichen Platzhaltern; `.env` bleibt über `.gitignore` ausgeschlossen.
+- [ ] Das verwendete Modell ist über die Einstellung `OPENAI_MODEL` konfigurierbar und hat den Default `gpt-4o-mini`.
+- [ ] Ein fehlender `OPENAI_API_KEY` führt **nicht** zu einem Fehler beim Start: `python manage.py check` endet auch ohne gesetzten Key mit Exit-Code 0.
 
-**Inline-Formular auf der Goal-Detailseite**
+**Service-Layer**
 
-- [ ] Die Goal-Detailseite (`/goals/<pk>/`) enthält ein Formular zum Anhängen einer Ressource mit den Feldern `url`, `title` und `type` sowie `{% csrf_token %}`. Das Feld `goal` ist **nicht** Teil des Formulars.
-- [ ] Ein POST mit gültigen Daten auf die Anlege-URL legt die Ressource am adressierten Goal an und leitet per Redirect (Status 302) zurück auf die Goal-Detailseite; die neue Ressource ist dort anschließend sichtbar.
-- [ ] Ein POST mit ungültigen Daten (z. B. leerer Titel oder ungültige URL) legt **keine** Ressource an und zeigt die Fehler mit Status 200 sichtbar an, ohne die bereits vorhandenen Ressourcen des Goals zu verlieren.
-- [ ] Das Goal wird ausschließlich aus der URL bzw. serverseitig aus dem gescopten Queryset bestimmt und ist nicht per POST-Feld überschreibbar (Test: ein POST mit zusätzlichem `goal=<fremde_id>` hängt die Ressource dennoch an das adressierte eigene Goal).
+- [ ] Die gesamte OpenAI-Anbindung liegt in einem Service-Modul; weder Views noch Models noch Templates importieren das `openai`-SDK direkt.
+- [ ] Der Service stellt zwei Funktionen bereit: eine für die Fortschrittszusammenfassung und eine für die nächsten Lernschritte. Beide nehmen ein `Goal` entgegen und liefern ein Ergebnis zurück, ohne die Datenbank zu verändern.
+- [ ] Die Zusammenfassung erhält die jüngsten Lernsitzungen (Datum, Dauer, Notizen) und die Ressourcen (Titel, Typ) des Goals als Kontext; die Anzahl der übergebenen Sitzungen ist begrenzt und nicht unbeschränkt.
+- [ ] Die Funktion für die nächsten Schritte liefert eine **Liste** von 2 bis 3 Einträgen zurück, nicht einen Fließtext-Block.
+- [ ] An die API werden ausschließlich Daten des übergebenen Goals übermittelt; Daten anderer Nutzer sind im Prompt nicht enthalten (belegt durch einen Test, der den Prompt-Inhalt prüft).
 
-**Anzeige mit Typ-Badge**
+**Mock-Modus**
 
-- [ ] Die Goal-Detailseite listet alle Ressourcen des Goals mit Titel und verlinkter URL.
-- [ ] Zu jeder Ressource wird der Typ als lesbares Label angezeigt (`Artikel`, `Video`, `Repository`, `Dokumentation`), nicht als technischer Wert.
-- [ ] Jede Ressource trägt eine typabhängige CSS-Klasse der Form `badge-<type>` (z. B. `badge-video`), über die die optische Hervorhebung erfolgt; der Test prüft, dass die zum Typ passende Klasse im gerenderten HTML vorkommt.
-- [ ] Hat ein Goal keine Ressourcen, erscheint ein entsprechender Hinweistext statt einer leeren Liste.
-- [ ] Ressourcen fremder Goals erscheinen nicht auf der eigenen Goal-Detailseite.
+- [ ] Es existiert ein Mock-Modus, der deterministische Ergebnisse liefert, ohne das Netzwerk zu berühren.
+- [ ] Der Mock-Modus ist aktiv, wenn er explizit eingeschaltet ist **oder** kein `OPENAI_API_KEY` vorliegt. Damit läuft die Anwendung lokal ohne Key benutzbar weiter.
+- [ ] Während `python manage.py test` findet **kein** externer API-Call statt. Nachweis: ein Test, der das SDK so ersetzt, dass jeder echte Aufruf den Test scheitern lässt, und danach beide Aktionen ausführt.
+- [ ] Die vollständige Testsuite läuft auch dann durch, wenn `OPENAI_API_KEY` in der Umgebung **gesetzt** ist — der Testlauf erzwingt den Mock-Modus unabhängig von der Umgebung.
 
-**Löschen von Ressourcen**
+**Aktionen auf der Goal-Detailseite**
 
-- [ ] Es existiert eine Lösch-Route für Ressourcen, die ausschließlich per POST löscht; ein GET löscht nicht.
-- [ ] Ein POST auf die Lösch-URL einer Ressource an einem **eigenen** Goal entfernt den Datensatz und leitet zurück auf die zugehörige Goal-Detailseite.
-- [ ] Nach dem Löschen bleibt das Goal selbst unverändert bestehen.
+- [ ] Die Goal-Detailseite enthält zwei POST-Formulare mit `{% csrf_token %}`: eines für die Zusammenfassung, eines für die nächsten Schritte. Beide lösen per GET keine Aktion aus.
+- [ ] Ein POST auf die Zusammenfassungs-Aktion liefert einen Redirect (302) zurück auf die Goal-Detailseite; das Ergebnis ist dort anschließend als Text sichtbar.
+- [ ] Ein POST auf die Next-Steps-Aktion liefert einen Redirect (302); das Ergebnis ist anschließend als Liste mit 2 bis 3 Einträgen sichtbar.
+- [ ] Vor der ersten Nutzung erscheint auf der Detailseite kein leerer Ergebnisbereich, sondern die Aktionen stehen ohne Platzhalter-Rumpf.
+- [ ] Die generierten Ergebnisse werden nicht dauerhaft in der Datenbank gespeichert; es ist keine neue Migration für Ergebnistexte nötig.
+
+**Fehlerbehandlung**
+
+- [ ] Django-Messages werden im Basis-Template ausgegeben (bislang nicht der Fall) und erscheinen damit auf allen Seiten.
+- [ ] Ein Timeout der API führt zu Status 302 zurück auf die Detailseite und einer Fehlermeldung über das Messages-Framework; die Seite bleibt bedienbar und es entsteht kein 500er.
+- [ ] Ein Rate-Limit-Fehler der API wird ebenso abgefangen und erzeugt eine eigene, verständliche Meldung.
+- [ ] Ein unerwarteter Fehler aus dem SDK (beliebige Exception) wird ebenfalls abgefangen und führt nicht zu einem 500er.
+- [ ] Die Fehlermeldungen enthalten **keine** technischen Interna wie API-Key, Stacktrace oder rohe SDK-Fehlertexte.
 
 **Scoping und Zugriffskontrolle**
 
-- [ ] Anlegen und Löschen von Ressourcen leiten einen nicht eingeloggten Aufruf mit Status 302 auf die Login-Seite um.
-- [ ] Ein POST von Nutzer A auf die Anlege-URL eines **fremden** Goals (Nutzer B) liefert Status 404 und legt **keine** Ressource an (Nachweis: `Resource.objects.count()` unverändert).
-- [ ] Ein POST von Nutzer A auf die Lösch-URL einer Ressource von Nutzer B liefert Status 404; die Ressource von B existiert danach weiterhin.
-- [ ] Ein GET von Nutzer A auf die Detailseite eines fremden Goals liefert weiterhin Status 404 — die Ressourcen von B werden dabei nicht ausgegeben.
-- [ ] Zur Gegenprobe ist belegt, dass Anlegen und Löschen am **eigenen** Goal weiterhin funktionieren; die 404-Kriterien sind damit nicht durch eine global gesperrte View trivial erfüllbar.
+- [ ] Beide Aktionen leiten einen nicht eingeloggten Aufruf mit Status 302 auf die Login-Seite um.
+- [ ] Ein POST von Nutzer A auf eine der beiden Aktionen für ein **fremdes** Goal (Nutzer B) liefert Status 404; es wird kein API-Aufruf ausgelöst und kein Ergebnis erzeugt.
+- [ ] Zur Gegenprobe ist belegt, dass beide Aktionen am eigenen Goal funktionieren.
 
 **Tests und Regression**
 
-- [ ] Automatisierte Tests in `core/tests/` decken ab: Modell-Validierung (Typ-Choices, URL-Format, Kaskadenlöschung), das Inline-Anlegen (Erfolg und Fehlerfall), die Anzeige inklusive Badge-Klasse sowie das vollständige Scoping für Anlegen, Löschen und Anzeigen.
-- [ ] Die bestehenden 63 Tests aus Feature 1 und 2 laufen unverändert weiter durch.
+- [ ] Automatisierte Tests decken ab: Service im Mock-Modus, Prompt-Inhalt (nur eigene Daten, Begrenzung der Sitzungszahl), beide Views inklusive Anzeige der Ergebnisse, alle drei Fehlerpfade (Timeout, Rate-Limit, unerwartete Exception) sowie das Scoping.
+- [ ] Die bestehenden 90 Tests aus Feature 1 bis 3 laufen unverändert weiter durch.
 - [ ] `python manage.py check` und `python manage.py test` enden mit Exit-Code 0.
-- [ ] Für `core` existiert eine neue, eingecheckte Migration; `python manage.py makemigrations --check --dry-run` meldet keine ausstehenden Änderungen.
+- [ ] `python manage.py makemigrations --check --dry-run` meldet keine ausstehenden Änderungen (dieses Feature bringt kein neues Modell mit).
 
 ## 3. Technische Rahmenbedingungen & Out-of-Scope
 
 **Rahmenbedingungen**
 
-- Bestehender Stack unverändert: Python 3.12, Django 5.2, SQLite, serverseitig gerenderte Django-Templates, **keine** zusätzlichen Abhängigkeiten in `requirements.txt`.
-- Das Modell wird in der bestehenden App `core` ergänzt; keine neue App.
-- `type` wird über `models.TextChoices` definiert, damit Werte, Labels und Validierung aus einer Quelle stammen — wie bereits bei `Goal.Status`.
-- Der Besitz einer Ressource wird **nicht** redundant gespeichert, sondern immer über `goal__user` aufgelöst. Damit können Goal und Ressource nicht auseinanderlaufen.
-- Das Scoping folgt dem etablierten Muster: `LoginRequiredMixin` plus ein `get_queryset()`, das generell auf `request.user` filtert. Ein fremder PK ergibt strukturell 404 statt einer nachgelagerten Berechtigungsprüfung.
-- Beim Anlegen wird das Ziel-Goal über `get_object_or_404()` aus dem auf `request.user` gescopten Goal-Queryset bestimmt — nicht aus einem Formularfeld.
-- Die Goal-Detailseite bleibt eine `DetailView`; das Inline-Formular wird über `get_context_data()` bereitgestellt und von einer separaten View verarbeitet. Bei Validierungsfehlern wird die Detailseite mit dem fehlerbehafteten Formular erneut gerendert (Status 200).
-- Die Badges werden über CSS-Klassen im bestehenden minimalen Styling umgesetzt; es wird kein CSS-Framework eingeführt.
-- Gelöscht wird ausschließlich per POST mit CSRF-Token (kein Löschen per GET).
+- Bestehender Stack unverändert: Python 3.12, Django 5.2, SQLite, serverseitig gerenderte Templates. Einzige neue Abhängigkeit: `openai`.
+- Modell: `gpt-4o-mini` als Default, über die Einstellung `OPENAI_MODEL` austauschbar.
+- Die Anbindung liegt in einem Service-Layer unter `core/services/`; Views rufen ausschließlich diesen Service auf. Damit bleibt das SDK an einer Stelle austauschbar und die Views sind ohne Netzwerk testbar.
+- Der Service wirft eine eigene Exception-Klasse. SDK-spezifische Fehlertypen werden dort in diese Klasse übersetzt und erreichen die Views nicht — die Views kennen das SDK nicht.
+- Die Ergebnisse sind flüchtig und werden in der Session des Nutzers gehalten, nicht in der Datenbank. Begründung: generierte Texte sind Momentaufnahmen, kein Stammdatum; so entfällt eine Migration und es entstehen keine veralteten Zusammenfassungen im Datenbestand.
+- Scoping wie in den Vorfeatures: Das Goal wird über ein auf `request.user` gescoptes Queryset aufgelöst, ein fremder PK ergibt 404 **bevor** ein API-Aufruf stattfindet.
+- Timeout und Wiederholungsverhalten werden explizit gesetzt, damit ein hängender API-Aufruf keinen Request-Thread blockiert.
+- Die Testsuite erzwingt den Mock-Modus unabhängig von der Umgebung des Entwicklers.
 
 **Out-of-Scope**
 
-- Keine REST-API, kein Django REST Framework, kein JavaScript — das Inline-Formular ist ein normales HTML-Formular mit vollem Seiten-Reload, kein AJAX.
-- Kein Bearbeiten bestehender Ressourcen (nur Anlegen, Anzeigen, Löschen).
-- Keine eigenständige Ressourcen-Übersichtsseite über alle Goals hinweg.
-- Kein automatisches Auslesen von Titel, Favicon oder Metadaten aus der URL; kein Abruf der Ziel-URL durch den Server.
-- Keine Prüfung auf Erreichbarkeit der URL und keine Dublettenerkennung.
-- Keine Verknüpfung von Ressourcen mit `LearningSession` oder `Tag`.
-- Keine Sortier- oder Filteroberfläche für Ressourcen, keine Pagination.
-- Kein individuelles UI-Design oder CSS-Framework; Styling bleibt minimal.
+- Kein Streaming der Antworten, kein Token-Zähler, keine Kostenanzeige.
+- Keine Speicherung oder Historie generierter Zusammenfassungen; kein Vergleich über die Zeit.
+- Keine Hintergrundverarbeitung (kein Celery, keine Queue) — die Aufrufe laufen synchron im Request.
+- Kein Caching der Antworten und keine Deduplizierung gleicher Anfragen.
+- Keine Nutzung weiterer OpenAI-Funktionen (Embeddings, Function Calling, Assistants, Vision).
+- Keine KI-Funktionen an anderer Stelle (Profil, Sessions-Liste, Ressourcen).
+- Kein Rate-Limiting oder Kontingent pro Nutzer auf Anwendungsseite.
+- Keine Mehrsprachigkeit der generierten Texte über die vorgegebene Sprache hinaus.
+- Kein individuelles UI-Design; Styling bleibt minimal.
+
+**Ausdrücklicher Hinweis zur Verifizierbarkeit**
+
+In dieser Umgebung ist **kein `OPENAI_API_KEY` vorhanden**. Der echte API-Pfad ist damit nicht end-to-end verifizierbar. Die Abnahme erfolgt über den Mock-Modus und über Tests, die das SDK gezielt durch Fehler werfende Doubles ersetzen. Die Korrektheit des Aufruf-Codes gegen die echte API bleibt bis zu einem Lauf mit gültigem Schlüssel ungeprüft; dieser Vorbehalt ist im Review festzuhalten.
