@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Shell-Scripte brauchen LF, auch auf Windows-Checkouts -- mit CRLF
+# scheitert der Containerstart an "/bin/sh^M: bad interpreter".
+*.sh text eol=lf
+entrypoint.sh text eol=lf

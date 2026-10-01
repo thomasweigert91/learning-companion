@@ -1,0 +1,11 @@
+# Nur Werkzeug-Konfiguration -- das Projekt wird nicht als Paket gebaut.
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [".venv", "core/migrations", "staticfiles"]
+
+[tool.ruff.lint]
+# E/F: pycodestyle + pyflakes, I: Import-Sortierung, UP: veraltete Idiome,
+# B: haeufige Fallstricke (bugbear).
+select = ["E", "F", "I", "UP", "B"]

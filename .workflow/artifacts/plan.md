@@ -1,173 +1,202 @@
-# Implementierungs-Plan: Dashboard und Auswertung der Lernaktivitaet
+# Implementierungs-Plan: Containerisierung und Continuous Integration
 
 ## 1. Betroffene Dateien
 
-- Neu: `core/templates/core/dashboard.html`
-- Neu: `core/tests/test_dashboard.py`
-- Ändern: `core/views.py` (neue `DashboardView`)
-- Ändern: `core/urls.py` (Route `dashboard/` -> `core:dashboard`)
-- Ändern: `core/templates/base.html` (Navigations-Link + CSS fuer Kacheln/Balken)
+- Neu: `Dockerfile`
+- Neu: `.dockerignore`
+- Neu: `entrypoint.sh`
+- Neu: `docker-compose.yml`
+- Neu: `.github/workflows/ci.yml`
+- Neu: `requirements-dev.txt`
+- Neu: `pyproject.toml` (nur `[tool.ruff]`-Konfiguration)
+- Ändern: `requirements.txt` (`gunicorn`, `whitenoise`)
+- Ändern: `learning_companion/settings.py` (`STATIC_ROOT`, `DJANGO_DB_PATH`, WhiteNoise)
+- Ändern: `.env.example` (neue Variablen dokumentieren)
+- Ändern: `.gitattributes` (LF für `entrypoint.sh` erzwingen)
 
 ## 2. Datenmodelle & Migrationen
 
-**Keine.** Das Feature ist rein lesend. Alle benoetigten Felder existieren bereits:
+**Keine.** Das Feature ist reine Infrastruktur: kein Modell, kein Feld, keine
+Migration. `python manage.py makemigrations --check --dry-run` muss unverändert
+"No changes detected" melden -- die CI prüft das künftig bei jedem Lauf.
 
-| Modell | genutzte Felder | Rolle in der Auswertung |
-| --- | --- | --- |
-| `Goal` | `user`, `status` | Gruppierung "Ziele nach Status" |
-| `LearningSession` | `goal` (-> `goal__user`), `date`, `duration`, `tags` | Basis beider Zeit-Auswertungen |
-| `Tag` | `name` (ueber `LearningSession.tags`) | Gruppierung "Lernzeit je Tag-Kategorie" |
+Die einzigen Änderungen an `settings.py` betreffen Konfiguration, nicht Schema:
 
-Es werden **keine** Felder ergaenzt und **keine** Migration erzeugt.
-`python manage.py makemigrations --check` muss folglich sauber bleiben.
+| Einstellung | Heute | Künftig | Rückwärtskompatibel? |
+|---|---|---|---|
+| `STATIC_ROOT` | nicht gesetzt → `collectstatic` bricht ab | `os.environ.get("DJANGO_STATIC_ROOT", BASE_DIR / "staticfiles")` | ja, neu und additiv |
+| `DATABASES.default.NAME` | fest `BASE_DIR / "db.sqlite3"` | `os.environ.get("DJANGO_DB_PATH", BASE_DIR / "db.sqlite3")` | ja, Default identisch |
+| `MIDDLEWARE` | ohne WhiteNoise | WhiteNoise direkt nach `SecurityMiddleware` | ja, bei `DEBUG=True` unauffällig |
 
-**Scoping-Konvention (unveraendert uebernommen):**
-
-- Goals: `Goal.objects.filter(user=request.user)`
-- Sessions: `LearningSession.objects.filter(goal__user=request.user)` --
-  der Besitzer wird weiterhin nicht redundant auf der Session gespeichert.
+`staticfiles/` ist in `.gitignore` bereits als `/staticfiles/` ausgeschlossen --
+der `collectstatic`-Output landet also nicht im Versionsstand.
 
 ## 3. Schrittweise Umsetzung
 
-- [ ] **Schritt 1: Setup & Models** -- Verifizieren, dass keine Modell-Aenderung
-      noetig ist (`makemigrations --check`). In `core/views.py` die Importe
-      ergaenzen: `from django.db.models import Count, Sum` und
-      `from django.db.models.functions import TruncWeek`.
+- [ ] **Schritt 1: Abhängigkeiten und Settings** --
+      `requirements.txt` um `gunicorn>=23.0,<24.0` und `whitenoise>=6.7,<7.0`
+      ergänzen (Stil der Bestandszeilen: `>=x,<y`). Neu: `requirements-dev.txt`
+      mit `-r requirements.txt` und `ruff>=0.6,<1.0` -- der Linter bleibt damit
+      aus dem Laufzeit-Image heraus.
 
-- [ ] **Schritt 2: Business-Logik / Views** -- `DashboardView(LoginRequiredMixin,
-      TemplateView)` mit `template_name = "core/dashboard.html"` anlegen. Die
-      Aggregation wird in vier kleine, je einzeln testbare Hilfsmethoden
-      zerlegt, die alle `request.user` als Grundlage haben:
+      In `settings.py`:
+      ```python
+      DATABASES = {
+          "default": {
+              "ENGINE": "django.db.backends.sqlite3",
+              "NAME": os.environ.get("DJANGO_DB_PATH", BASE_DIR / "db.sqlite3"),
+          }
+      }
 
-      1. `_goals_nach_status()`
-         ```python
-         roh = dict(
-             Goal.objects.filter(user=self.request.user)
-             .values_list("status")
-             .annotate(anzahl=Count("pk"))
-         )
-         return [
-             {"status": wert, "label": label, "anzahl": roh.get(wert, 0)}
-             for wert, label in Goal.Status.choices
-         ]
-         ```
-         Die Schleife ueber `Goal.Status.choices` sorgt dafuer, dass ein Status
-         ohne Goals mit 0 erscheint statt zu fehlen. Gezaehlt wird weiterhin in
-         der Datenbank (`Count`), nicht in Python.
+      STATIC_URL = "static/"
+      STATIC_ROOT = os.environ.get("DJANGO_STATIC_ROOT", BASE_DIR / "staticfiles")
+      STORAGES = {
+          "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+          "staticfiles": {
+              "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"
+          },
+      }
+      ```
+      WhiteNoise als `"whitenoise.middleware.WhiteNoiseMiddleware"` direkt nach
+      `SecurityMiddleware` einhängen -- die von WhiteNoise dokumentierte
+      Position.
 
-      2. `_zeit_je_tag()`
-         ```python
-         LearningSession.objects.filter(goal__user=user, tags__isnull=False)
-             .values("tags__name")
-             .annotate(minuten=Sum("duration"))
-             .order_by("-minuten", "tags__name")
-         ```
-         `tags__isnull=False` verhindert die `None`-Gruppe aus dem LEFT JOIN auf
-         die M2M-Tabelle. Eine Session mit mehreren Tags erzeugt mehrere
-         Join-Zeilen und zaehlt damit korrekt in jede Kategorie ein.
+      `pyproject.toml` mit einer minimalen `[tool.ruff]`-Sektion anlegen
+      (`line-length = 100`, Migrations und `.venv` ausgeschlossen), damit lokal
+      und in der CI derselbe Regelsatz greift.
 
-      3. `_zeit_je_woche()`
-         ```python
-         LearningSession.objects.filter(goal__user=user)
-             .annotate(woche=TruncWeek("date"))
-             .values("woche")
-             .annotate(minuten=Sum("duration"))
-             .order_by("woche")
-         ```
-         `TruncWeek` liefert den Montag der jeweiligen Woche als `date`.
-         Wichtig: `.order_by()` muss nach `.values()` gesetzt werden, sonst
-         zieht `Meta.ordering = ["-date", "-pk"]` das Feld `pk` in die
-         GROUP-BY-Klausel und sprengt die Gruppierung.
+- [ ] **Schritt 2: Dockerfile (Multi-Stage)** --
 
-      4. `_kpis()` -- `Goal.objects.filter(...).count()`,
-         `sessions.count()` und
-         `sessions.aggregate(gesamt=Sum("duration"))["gesamt"] or 0`
-         (das `or 0` faengt das `None` bei leerer Datenlage ab).
+      *Stage `builder`* auf `python:3.12-slim`: `requirements.txt` kopieren und
+      `pip wheel --wheel-dir /wheels -r requirements.txt` ausführen. Die Wheels
+      sind das einzige, was in die Runtime-Stage übernommen wird -- pip-Cache,
+      Quell-Archive und eine eventuelle Toolchain bleiben zurück.
 
-      `get_context_data()` legt zusaetzlich zu den Listen jeweils den
-      Maximalwert (`max_tag_minuten`, `max_wochen_minuten`) in den Kontext --
-      berechnet mit `max(..., default=0)`. Daraus bestimmt das Template die
-      Balkenbreite; ist das Maximum 0, wird gar keine Tabelle gerendert, womit
-      eine Division durch Null strukturell ausgeschlossen ist.
+      *Stage `runtime`* auf `python:3.12-slim`:
+      - `ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1`
+      - Benutzer anlegen: `groupadd --system --gid 1000 app` +
+        `useradd --system --uid 1000 --gid app --no-create-home app`
+      - `--from=builder /wheels` kopieren, daraus
+        `pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt`,
+        danach `rm -rf /wheels`
+      - Anwendungscode nach `/app` kopieren, `entrypoint.sh` nach
+        `/usr/local/bin/entrypoint.sh` mit `chmod +x`
+      - `/data` als Verzeichnis für die SQLite-Datei anlegen und zusammen mit
+        `/app/staticfiles` an `app:app` übereignen -- **das** ist der Punkt, an
+        dem ein unprivilegierter Prozess sonst scheitert: SQLite braucht
+        Schreibrechte nicht nur auf die Datei, sondern auf das *Verzeichnis*
+        (Journal- bzw. WAL-Datei).
+      - `ENV DJANGO_DB_PATH=/data/db.sqlite3 DJANGO_STATIC_ROOT=/app/staticfiles`
+        -- Pfade, keine Secrets.
+      - `USER app`, `EXPOSE 8000`,
+        `ENTRYPOINT ["entrypoint.sh"]`,
+        `CMD ["gunicorn", "learning_companion.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]`
 
-- [ ] **Schritt 3: UI / Templates** -- `core/templates/core/dashboard.html`
-      anlegen (`{% extends "base.html" %}`):
-      - KPI-Kacheln (Goals gesamt, Sessions gesamt, Lernzeit gesamt) als
-        `div.kpi-card` in einem `div.kpi-row`.
-      - Drei Abschnitte mit je einer `<table>`; in der letzten Spalte ein
-        `div.bar` mit `style="width: {% widthratio wert maximum 100 %}%"`.
-        `widthratio` ist der Django-Bordmittel-Weg fuer die Prozentrechnung und
-        gibt bei Nenner 0 einen leeren String zurueck -- zusammen mit der
-        `{% if %}`-Huelle doppelt abgesichert.
-      - Pro Abschnitt ein `{% empty %}`- bzw. `{% if %}`-Zweig mit einer
-        Hinweiszeile ("Noch keine Lernsitzungen erfasst.").
-      - Wochen-Spalte via `{{ zeile.woche|date:"d.m.Y" }}` als Wochenbeginn.
+      Bewusst **nicht** im Image: `.env`, `SECRET_KEY`, `OPENAI_API_KEY`. Die
+      `.dockerignore` schließt `.env` zusätzlich aus, damit auch ein
+      versehentliches `COPY . .` den Schlüssel nicht einzieht.
 
-      In `base.html` den Nav-Link `<a href="{% url 'core:dashboard' %}">Dashboard</a>`
-      im `{% if user.is_authenticated %}`-Block ergaenzen (vor "Goals") und den
-      bestehenden `<style>`-Block um `.kpi-row`, `.kpi-card`, `.bar` und
-      `.bar-track` erweitern -- reines CSS, kein Framework, passend zum
-      bestehenden Badge-Stil.
+- [ ] **Schritt 3: entrypoint.sh** --
+      ```sh
+      #!/bin/sh
+      set -e
+      python manage.py migrate --noinput
+      python manage.py collectstatic --noinput
+      exec "$@"
+      ```
+      `set -e` verhindert einen Start mit halb migrierter Datenbank. `exec`
+      ersetzt die Shell durch gunicorn, sodass gunicorn PID 1 wird und `SIGTERM`
+      aus `docker stop` direkt erhält -- ohne `exec` würde die Shell das Signal
+      schlucken und der Container liefe in den 10-Sekunden-Timeout.
 
-      In `core/urls.py` ergaenzen:
-      `path("dashboard/", views.DashboardView.as_view(), name="dashboard")`.
+      Die Datei muss **LF**-Zeilenenden haben; mit CRLF scheitert der Start an
+      `/bin/sh^M: bad interpreter`. Absicherung auf zwei Ebenen: beim Schreiben
+      explizit LF, und in `.gitattributes` die Regel
+      `entrypoint.sh text eol=lf` gegen die globale `* text=auto`-Normalisierung
+      auf einem Windows-Checkout.
 
-- [ ] **Schritt 4: Tests** -- `core/tests/test_dashboard.py` nach dem Muster von
-      `core/tests/test_scoping.py` mit einer gemeinsamen
-      `DashboardDatenTestCase(TestCase)`-Basis (`setUpTestData`):
-      - Nutzer A: 2 Goals `planned`, 1 Goal `in-progress`, 0 Goals `done`.
-      - Tags `Python` und `Django`.
-      - Sessions von A: 60 Min (Tag Python) und 30 Min (Tags Python + Django) in
-        Woche 1, 45 Min (Tag Django) sowie 20 Min **ohne Tag** in Woche 2.
-        Erwartet: Python 90, Django 75; Woche 1 = 90, Woche 2 = 65; gesamt 155
-        bei 4 Sessions. Die taglose Session belegt zugleich, dass der LEFT JOIN
-        keine `None`-Kategorie erzeugt, die Zeit aber in Wochen- und
-        Gesamtsumme einfliesst.
-      - Nutzer B bekommt eine **spiegelbildliche** Datenlage mit anderen Werten,
-        damit ein fehlendes Scoping die Zahlen von A nachweislich verschoebe.
+- [ ] **Schritt 4: .dockerignore** -- ausgeschlossen werden `.git/`,
+      `.gitattributes`, `.venv/`, `venv/`, `__pycache__/`, `*.py[cod]`,
+      `db.sqlite3*`, `.env`, `staticfiles/`, `media/`, `.workflow/`,
+      `.github/`, `.idea/`, `.vscode/`, `Dockerfile`, `docker-compose.yml`,
+      `*.md`. Damit enthält der Build-Context nur Anwendungscode, `manage.py`
+      und die Requirements-Dateien.
 
-- [ ] **Schritt 5: Validierung** -- `python manage.py check`,
-      `python manage.py makemigrations --check --dry-run` und
-      `python manage.py test` im aktiven `.venv` ausfuehren, anschliessend
-      `.\.workflow\hooks\validate_code.ps1`.
+- [ ] **Schritt 5: docker-compose.yml** --
+      Ein Service `web` mit `build: .`, `ports: ["8000:8000"]`, einem benannten
+      Volume `dbdata:/data` für die SQLite-Datei und
+      ```yaml
+      env_file:
+        - path: .env
+          required: false
+      ```
+      Die `required: false`-Form sorgt dafür, dass `docker compose up` auch ohne
+      lokale `.env` startet. Zusätzlich gesetzt werden nur unkritische Defaults
+      (`DJANGO_DEBUG=False`, `DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1`) --
+      keine Secrets im Versionsstand. Kein `version:`-Schlüssel, der ist in
+      aktuellen Compose-Versionen obsolet und erzeugt eine Warnung.
+
+- [ ] **Schritt 6: .github/workflows/ci.yml** --
+      Zwei Jobs auf `ubuntu-latest`, Trigger:
+      ```yaml
+      on:
+        push:
+          branches: [main]
+        pull_request:
+          branches: [main]
+      permissions:
+        contents: read
+      ```
+      *Job `test`:* `actions/checkout@v4` → `actions/setup-python@v5` mit
+      `python-version: "3.12"` und `cache: pip` (als `cache-dependency-path`
+      beide Requirements-Dateien) → `pip install -r requirements-dev.txt` →
+      `ruff check .` → `python manage.py check` →
+      `python manage.py makemigrations --check --dry-run` →
+      `python manage.py test`.
+
+      *Job `docker`:* `actions/checkout@v4` → `docker build -t learning-companion:ci .`
+      Ein kaputtes Dockerfile färbt die CI damit rot, ohne dass ein Image
+      irgendwohin gepusht wird.
+
+      Keine `secrets`-Referenzen: ohne `OPENAI_API_KEY` läuft der AI-Service im
+      Mock-Modus, die Testsuite ist davon unabhängig (belegt durch Feature 4).
+
+- [ ] **Schritt 7: Dokumentation** -- `.env.example` um `DJANGO_DB_PATH` und
+      `DJANGO_STATIC_ROOT` ergänzen, jeweils mit Kommentar und leerem bzw.
+      auskommentiertem Wert (die Defaults aus `settings.py` greifen).
+
+- [ ] **Schritt 8: Validierung** -- siehe Abschnitt 4. Docker ist in dieser
+      Umgebung verfügbar (29.7.2), der Build und ein Container-Smoke-Test werden
+      daher **real ausgeführt**, nicht nur syntaktisch geprüft.
 
 ## 4. Validierung & Test-Strategie
 
-**Testmodul:** `core/tests/test_dashboard.py`
+Das Feature ist Infrastruktur -- es entstehen keine neuen Django-Unit-Tests. Die
+Validierung erfolgt stattdessen gegen die realen Werkzeuge:
 
-| Testklasse | Testfall | Prueft |
-| --- | --- | --- |
-| `DashboardZugriffTests` | `test_anonym_wird_umgeleitet` | `GET /dashboard/` ohne Login -> `assertRedirects` auf `login?next=/dashboard/` |
-| | `test_angemeldet_erreichbar` | Status 200 und Template `core/dashboard.html` |
-| | `test_navbar_enthaelt_dashboard_link` | `/goals/` enthaelt `href="/dashboard/"` fuer angemeldete Nutzer |
-| `GoalsNachStatusTests` | `test_zaehlung_je_status` | Kontext `goals_nach_status` liefert exakt `planned=2`, `in-progress=1`, `done=0` |
-| | `test_status_ohne_goals_wird_mit_null_ausgewiesen` | alle drei Status-Werte sind enthalten, auch der leere |
-| `ZeitJeTagTests` | `test_summe_je_tag` | `Python = 90`, `Django = 75` (Mehrfach-Tag zaehlt in beide Kategorien) |
-| | `test_session_ohne_tag_erzeugt_keine_leere_gruppe` | kein Eintrag mit `tags__name is None` |
-| `ZeitJeWocheTests` | `test_summe_je_kalenderwoche` | zwei Wochen-Eintraege mit 90 und 65 Minuten, aufsteigend nach `woche` sortiert |
-| | `test_wochenbeginn_ist_montag` | `TruncWeek` liefert den Montag der jeweiligen Woche |
-| `KpiTests` | `test_kpi_summen` | `goals_gesamt=3`, `sessions_gesamt=4`, `minuten_gesamt=155` |
-| `IsolationsTests` | `test_fremde_goals_aendern_status_zaehlung_nicht` | Nutzer A sieht trotz Goals von B weiterhin 2/1/0 |
-| | `test_fremde_sessions_aendern_tag_summen_nicht` | Tag-Summen von A bleiben 90/75 |
-| | `test_fremde_sessions_aendern_wochen_summen_nicht` | Wochen-Summen von A bleiben 90/65 |
-| | `test_fremde_daten_aendern_kpis_nicht` | `minuten_gesamt` von A bleibt 155 |
-| `LeeresDashboardTests` | `test_nutzer_ohne_daten` | frischer Nutzer: Status 200, alle KPIs 0, leere Listen, keine Exception |
-| | `test_hinweis_statt_leerer_tabelle` | Response enthaelt den Hinweistext |
+| # | Prüfung | Kommando | Erwartung |
+|---|---|---|---|
+| 1 | Bestandstests nach Settings-Änderung | `python manage.py test` | 145 Tests, OK |
+| 2 | System-Check | `python manage.py check` | 0 Issues |
+| 3 | Migrationsfreiheit | `python manage.py makemigrations --check --dry-run` | No changes detected |
+| 4 | `collectstatic` lauffähig | `python manage.py collectstatic --noinput` | läuft durch (vorher: `ImproperlyConfigured`) |
+| 5 | Linter | `ruff check .` | keine Befunde |
+| 6 | Image-Build | `docker build -t learning-companion:ci .` | Exit 0 |
+| 7 | Non-Root | `docker run --rm learning-companion:ci id -u` | Ausgabe != 0 |
+| 8 | Keine Secrets im Image | `docker history --no-trunc` + `docker run --rm ... env` | kein `sk-`, kein echter `SECRET_KEY` |
+| 9 | Entrypoint-Zeilenenden | Prüfung auf `\r` in `entrypoint.sh` | kein Treffer |
+| 10 | Container-Smoke-Test | `docker compose up -d`, dann HTTP-Request auf `:8000` | Status 200 oder Redirect, Migration + collectstatic im Log |
+| 11 | Statische Dateien bei `DEBUG=False` | Request auf eine Admin-CSS-Datei | Status 200, nicht 404 |
+| 12 | Compose-Syntax | `docker compose config` | validiert fehlerfrei |
+| 13 | CI-Workflow-Syntax | YAML-Parse des Workflows + Prüfung der Trigger/Steps | `push`+`pull_request` auf `main`, Cache, alle vier Prüfschritte vorhanden |
+| 14 | Hook | `.\.workflow\hooks\validate_code.ps1` | Exit-Code 0 |
 
-**Begruendung der Isolations-Strategie:** Ein Scoping-Fehler faellt nur auf, wenn
-die Fremddaten die Kennzahlen veraendern wuerden. Deshalb bekommt Nutzer B
-Sessions mit *anderen* Dauern und dieselben Tags -- ein fehlendes
-`goal__user=`-Filter wuerde die Tag-Summe von A sofort nach oben ziehen und den
-Test rot faerben.
+**Besonderes Augenmerk** liegt auf Prüfung 7, 10 und 11: Die Kombination
+"unprivilegierter Benutzer" + "SQLite schreibt ins Dateisystem" +
+"`collectstatic` schreibt nach `STATIC_ROOT`" ist genau die Stelle, an der ein
+sonst korrektes Dockerfile beim ersten Start scheitert. Ein reiner `docker build`
+würde das nicht aufdecken -- deshalb wird der Container tatsächlich gestartet
+und ein Request abgesetzt.
 
-**Kommandos** (im aktiven `.venv`):
-
-```powershell
-python manage.py check
-python manage.py makemigrations --check --dry-run
-python manage.py test
-.\.workflow\hooks\validate_code.ps1
-```
-
-**Abnahmekriterium:** `validate_code.ps1` endet mit Exit-Code 0, d. h. System-Check
-und die komplette Test-Suite (bestehende Module inklusive) laufen gruen durch.
+**Abnahmekriterium:** `validate_code.ps1` endet mit Exit-Code 0 **und** die
+Prüfungen 6, 7, 10 und 12 sind real durchgeführt und dokumentiert.

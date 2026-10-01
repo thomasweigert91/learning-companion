@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Der Workflow liest nur -- er pusht weder Code noch Images.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint, Checks und Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Abhaengigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Linter
+        run: ruff check .
+
+      - name: Django System-Check
+        run: python manage.py check
+
+      - name: Migrationen vollstaendig?
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Testsuite
+        run: python manage.py test
+
+  docker:
+    name: Docker-Image bauen
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      # Nur bauen, nicht pushen: ein kaputtes Dockerfile faerbt die CI rot,
+      # ohne dass Registry-Zugangsdaten noetig waeren.
+      - name: Image bauen
+        run: docker build -t learning-companion:ci .

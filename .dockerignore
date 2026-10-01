@@ -1,0 +1,31 @@
+# Versionskontrolle
+.git/
+.gitignore
+.gitattributes
+
+# Virtuelle Umgebungen
+.venv/
+venv/
+
+# Python-Artefakte
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Lokale Daten und Secrets -- duerfen unter keinen Umstaenden ins Image
+.env
+db.sqlite3
+db.sqlite3-journal
+staticfiles/
+media/
+
+# Entwicklungs- und Workflow-Dateien, zur Laufzeit ohne Funktion
+.workflow/
+.github/
+.idea/
+.vscode/
+Dockerfile
+.dockerignore
+docker-compose.yml
+requirements-dev.txt
+*.md

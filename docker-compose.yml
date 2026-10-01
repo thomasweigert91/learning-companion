@@ -1,0 +1,25 @@
+# Lokale Ausfuehrung des Containers. Kein "version:"-Schluessel -- der ist in
+# aktuellen Compose-Versionen obsolet und erzeugt nur eine Warnung.
+
+services:
+  web:
+    build: .
+    image: learning-companion:local
+    ports:
+      - "8000:8000"
+    # Optional: wird eine lokale .env angelegt, zieht Compose sie automatisch.
+    # required: false haelt "docker compose up" auch ohne die Datei lauffaehig.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Nur unkritische Defaults -- Secrets gehoeren in die lokale .env.
+      DJANGO_DEBUG: "False"
+      DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1"
+    volumes:
+      # Benanntes Volume: die SQLite-Datei ueberlebt "down" und "up".
+      - dbdata:/data
+    restart: unless-stopped
+
+volumes:
+  dbdata:

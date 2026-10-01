@@ -1,100 +1,167 @@
-# Ticket: Dashboard und Auswertung der Lernaktivitaet
+# Ticket: Containerisierung und Continuous Integration
 
 ## 1. Problem / Ziel
 
-Die Anwendung speichert Lernziele (`Goal`), Lernsitzungen (`LearningSession`) und
-Tags, bietet aber keine zusammenfassende Sicht darauf. Wer wissen will, wie viele
-Ziele noch offen sind, in welchen Themen die meiste Zeit steckt oder ob die
-Lernmenge ueber die Wochen stabil bleibt, muss die Listenansichten manuell
-durchzaehlen.
+Die Anwendung laeuft bisher ausschliesslich lokal im `.venv` ueber den
+Django-Entwicklungsserver. Es gibt weder ein reproduzierbares Artefakt fuer den
+Betrieb noch eine automatisierte Pruefung von Pull Requests -- jeder Lauf der
+Testsuite haengt daran, dass jemand ihn manuell anstoesst.
 
-Dieses Ticket ergaenzt ein Dashboard unter `/dashboard/`, das genau diese drei
-Fragen beantwortet. Die Kennzahlen werden vollstaendig per Django-ORM-Aggregation
-auf der Datenbank berechnet (kein Auszaehlen in Python), und zwar ausschliesslich
-ueber die Daten des angemeldeten Nutzers.
+Dieses Ticket schliesst beide Luecken:
 
-Fachliche Kennzahlen:
+1. **Container** -- ein Multi-Stage-Dockerfile auf Basis `python:3.12-slim`, das
+   die Anwendung unter einem unprivilegierten Benutzer mit `gunicorn` als
+   WSGI-Server startet. Ein Entrypoint-Script fuehrt Migrationen und
+   `collectstatic` vor dem Start zuverlaessig aus. Eine `docker-compose.yml`
+   macht den Container lokal auf Port 8000 startbar.
+2. **CI** -- ein GitHub-Actions-Workflow, der bei `push` und `pull_request` auf
+   `main` die Abhaengigkeiten installiert (mit Cache), den Django-System-Check
+   und einen Linter ausfuehrt und die komplette Testsuite laufen laesst.
 
-1. **Ziele nach Status** -- Anzahl der `Goal`-Objekte gruppiert nach `status`
-   (`planned`, `in-progress`, `done`) via `Count()`.
-2. **Lernzeit je Tag-Kategorie** -- Summe von `LearningSession.duration` gruppiert
-   nach dem zugeordneten `Tag` via `Sum('duration')`.
-3. **Lernzeit je Kalenderwoche** -- Summe von `LearningSession.duration` gruppiert
-   nach `TruncWeek('date')` via `Sum('duration')`.
+**Zwei Voraussetzungen, die der Code heute nicht erfuellt** und die dieses Ticket
+deshalb mit abdeckt:
+
+- `settings.py` definiert kein `STATIC_ROOT`. `collectstatic` bricht ohne diese
+  Einstellung mit `ImproperlyConfigured` ab -- der Entrypoint waere nicht
+  lauffaehig.
+- Die SQLite-Datei liegt per `BASE_DIR / "db.sqlite3"` im Anwendungsverzeichnis.
+  Dieses Verzeichnis gehoert im Image `root`; ein unprivilegierter Prozess kann
+  dort weder die Datenbank anlegen noch die von SQLite benoetigte
+  Journal-Datei schreiben. Der Pfad muss ueber die Umgebung auf ein
+  beschreibbares Verzeichnis umlenkbar sein.
 
 ## 2. Akzeptanzkriterien
 
-- [ ] Es existiert eine `DashboardView` unter dem Pfad `/dashboard/` mit dem
-      URL-Namen `core:dashboard`.
-- [ ] Die View ist ausschliesslich fuer angemeldete Nutzer erreichbar
-      (`LoginRequiredMixin` bzw. `@login_required`); ein anonymer Aufruf von
-      `/dashboard/` fuehrt zu einem Redirect (302) auf die Login-Seite.
-- [ ] `base.html` enthaelt im Navigations-Bereich fuer angemeldete Nutzer einen
-      Link "Dashboard" auf `{% url 'core:dashboard' %}`.
-- [ ] Die Kennzahl "Ziele nach Status" liefert fuer jeden der drei Status-Werte
-      (`planned`, `in-progress`, `done`) die korrekte Anzahl der Goals von
-      `request.user`, berechnet per `.values('status').annotate(Count(...))`.
-      Ein Status ohne Goals wird mit dem Wert 0 ausgewiesen und nicht verschluckt.
-- [ ] Die Kennzahl "Lernzeit je Tag-Kategorie" liefert pro `Tag` die Summe der
-      `duration`-Werte aller Sessions von `request.user`, berechnet per
-      `.values('tags__name').annotate(Sum('duration'))`. Eine Session mit mehreren
-      Tags zaehlt in jede dieser Kategorien ein.
-- [ ] Die Kennzahl "Lernzeit je Kalenderwoche" liefert pro Kalenderwoche die Summe
-      der `duration`-Werte aller Sessions von `request.user`, berechnet per
-      `.annotate(woche=TruncWeek('date')).values('woche').annotate(Sum('duration'))`,
-      aufsteigend nach Woche sortiert.
-- [ ] Zusaetzlich weist das Dashboard als KPI-Kacheln aus: Gesamtzahl der Goals,
-      Gesamtzahl der Sessions und die insgesamt erfasste Lernzeit (Summe aller
-      `duration`-Werte) des angemeldeten Nutzers.
-- [ ] Das Template `core/dashboard.html` stellt die KPIs als Kacheln dar und die
-      drei Auswertungen als Tabellen, jeweils ergaenzt um einen reinen CSS-Balken,
-      dessen Breite proportional zum Maximalwert der jeweiligen Auswertung ist.
-- [ ] Hat der Nutzer noch keine Sessions bzw. Goals, zeigt das Dashboard statt
-      leerer Tabellen eine verstaendliche Hinweiszeile an und wirft keinen Fehler
-      (insbesondere keine Division durch Null bei der Balkenbreite).
-- [ ] Ein Test verifiziert die Status-Zaehlung gegen eine bekannte Datenlage
-      (konkrete Soll-Zahlen, nicht nur "ist nicht leer").
-- [ ] Ein Test verifiziert die Summe je Tag-Kategorie gegen bekannte
-      `duration`-Werte.
-- [ ] Ein Test verifiziert die Summe je Kalenderwoche gegen bekannte Daten ueber
-      mindestens zwei verschiedene Kalenderwochen hinweg.
-- [ ] Ein Isolations-Test belegt: Goals und Sessions eines zweiten Nutzers
-      veraendern keine der Kennzahlen des angemeldeten Nutzers. Dazu wird fuer
-      beide Nutzer dieselbe Datenlage angelegt und geprueft, dass die Zahlen des
-      ersten Nutzers unveraendert bleiben.
-- [ ] Ein Test belegt, dass ein Nutzer ohne jede Datenlage das Dashboard mit
-      Status 200 und Nullwerten erhaelt.
-- [ ] Alle bestehenden Tests laufen weiterhin durch (`python manage.py test`).
+### Dockerfile
+
+- [ ] Es existiert ein `Dockerfile` im Projektwurzelverzeichnis mit **mindestens
+      zwei Stages** (Build-Stage fuer die Abhaengigkeiten, schlanke
+      Runtime-Stage), basierend auf `python:3.12-slim`.
+- [ ] Die Runtime-Stage enthaelt **keine** Build-Toolchain (kein `gcc`, kein
+      `build-essential`); Compiler werden -- falls ueberhaupt noetig -- nur in
+      der Build-Stage installiert.
+- [ ] Das Image legt einen unprivilegierten Benutzer an (nicht `root`, UID != 0)
+      und setzt `USER` auf diesen Benutzer, **bevor** `CMD`/`ENTRYPOINT` greift.
+      `docker run --rm <image> id -u` gibt einen Wert != 0 aus.
+- [ ] Der Anwendungsprozess ist `gunicorn` mit
+      `learning_companion.wsgi:application`; `gunicorn` steht mit Versionsgrenze
+      in `requirements.txt`.
+- [ ] Der Container lauscht auf Port 8000 (`EXPOSE 8000`), gebunden an
+      `0.0.0.0`.
+- [ ] Es sind **keine Secrets** im Image: kein `.env` wird hineinkopiert, kein
+      `DJANGO_SECRET_KEY` und kein `OPENAI_API_KEY` steht als `ENV`- oder
+      `ARG`-Wert im Dockerfile. `docker history --no-trunc <image>` enthaelt
+      keinen Schluesselwert.
+- [ ] `PYTHONDONTWRITEBYTECODE=1` und `PYTHONUNBUFFERED=1` sind gesetzt, damit
+      keine `.pyc`-Dateien ins Image wandern und Logs ungepuffert erscheinen.
+
+### Entrypoint
+
+- [ ] Es existiert ein `entrypoint.sh`, das in dieser Reihenfolge
+      `python manage.py migrate --noinput` und
+      `python manage.py collectstatic --noinput` ausfuehrt und anschliessend per
+      `exec "$@"` an das `CMD` uebergibt -- damit laeuft `gunicorn` als PID 1
+      und empfaengt Signale direkt (sauberes `docker stop`).
+- [ ] Das Script beginnt mit `#!/bin/sh` und `set -e`, bricht also beim ersten
+      Fehler ab, statt mit halb migrierter Datenbank weiterzustarten.
+- [ ] `entrypoint.sh` hat **LF-Zeilenenden** (kein CRLF) und ist im Image
+      ausfuehrbar. Eine `.gitattributes`-Regel haelt die Zeilenenden auch auf
+      Windows-Checkouts stabil; `file entrypoint.sh` bzw. eine Pruefung auf
+      `\r` bleibt ohne Treffer.
+
+### Konfiguration
+
+- [ ] `settings.py` definiert `STATIC_ROOT` (ueber `DJANGO_STATIC_ROOT`
+      konfigurierbar, Default `BASE_DIR / "staticfiles"`), sodass
+      `collectstatic --noinput` fehlerfrei durchlaeuft.
+- [ ] Der SQLite-Pfad ist ueber `DJANGO_DB_PATH` konfigurierbar; der Default
+      bleibt `BASE_DIR / "db.sqlite3"`, damit sich die lokale Entwicklung nicht
+      aendert. Im Container zeigt die Variable auf ein Verzeichnis, das dem
+      unprivilegierten Benutzer gehoert.
+- [ ] Statische Dateien werden bei `DEBUG=False` ausgeliefert (WhiteNoise als
+      Middleware direkt nach `SecurityMiddleware`); ein Aufruf der
+      Admin-Login-Seite im Container liefert CSS mit Status 200 statt 404.
+- [ ] `.env.example` dokumentiert die neuen Variablen `DJANGO_DB_PATH` und
+      `DJANGO_STATIC_ROOT`.
+
+### .dockerignore
+
+- [ ] Es existiert eine `.dockerignore`, die mindestens `.venv/`, `.git/`,
+      `db.sqlite3`, `__pycache__/`, `*.pyc`, `.env`, `staticfiles/` und
+      `.workflow/` ausschliesst.
+- [ ] Der Build-Context ist dadurch nachweislich klein: der von
+      `docker build` gemeldete Transfer-Umfang liegt deutlich unter der Groesse
+      des Arbeitsverzeichnisses mit `.venv` und `.git`.
+
+### docker-compose.yml
+
+- [ ] Es existiert eine `docker-compose.yml`, die den Container baut und Port
+      8000 des Hosts auf 8000 des Containers mappt.
+- [ ] Die Konfiguration liest Umgebungsvariablen aus einer optionalen lokalen
+      `.env` (`env_file` mit `required: false`), haelt aber **keine** Secrets im
+      Versionsstand.
+- [ ] Ein benanntes Volume haelt die SQLite-Datenbank, sodass Daten einen
+      `docker compose down`/`up`-Zyklus ueberleben.
+- [ ] `docker compose config` validiert die Datei fehlerfrei.
+
+### GitHub Actions CI
+
+- [ ] Es existiert `.github/workflows/ci.yml` mit Triggern auf `push` **und**
+      `pull_request` jeweils fuer den Branch `main`.
+- [ ] Der Workflow richtet Python 3.12 ein (`actions/setup-python`) und nutzt
+      Dependency-Caching (`cache: pip`), damit wiederholte Laeufe die
+      Abhaengigkeiten nicht neu herunterladen.
+- [ ] Der Workflow installiert die Abhaengigkeiten aus `requirements.txt`.
+- [ ] Der Workflow fuehrt aus: einen Linter (`ruff check`), den
+      Django-System-Check (`manage.py check`), eine Migrationspruefung
+      (`makemigrations --check --dry-run`) und die Testsuite
+      (`python manage.py test`).
+- [ ] Der Workflow setzt `permissions: contents: read` und pinnt die verwendeten
+      Actions auf eine Major-Version, statt `@master` zu referenzieren.
+- [ ] Ein zweiter Job baut das Docker-Image (`docker build`), damit ein
+      kaputtes Dockerfile die CI rot faerbt.
+- [ ] Die CI benoetigt **keine** Secrets: ohne `OPENAI_API_KEY` laeuft die
+      Anwendung im Mock-Modus, die Testsuite ist davon unabhaengig.
+
+### Validierung
+
+- [ ] `docker build` laeuft lokal fehlerfrei durch. Docker ist in dieser
+      Umgebung verfuegbar (Version 29.7.2), der Build wird also **real
+      ausgefuehrt** und nicht nur syntaktisch geprueft.
+- [ ] Der gebaute Container startet, fuehrt Migration und `collectstatic` aus
+      und beantwortet einen HTTP-Request auf Port 8000 mit einem gueltigen
+      Status (200 oder ein Redirect), nicht mit einem Fehler.
+- [ ] `ruff check` laeuft ohne Befund ueber den Anwendungscode.
+- [ ] Alle 145 bestehenden Tests laufen weiterhin durch
+      (`python manage.py test`), insbesondere nach der Aenderung an
+      `settings.py`.
 
 ## 3. Technische Rahmenbedingungen & Out-of-Scope
 
 **Rahmenbedingungen**
 
-- Django 5 mit dem bestehenden `core`-App-Layout; Entwicklung gegen SQLite im
-  aktiven `.venv`.
-- Die Aggregation erfolgt vollstaendig im ORM (`Count`, `Sum`, `TruncWeek` aus
-  `django.db.models` bzw. `django.db.models.functions`). Es wird **nicht** in
-  Python ueber Querysets iteriert, um Werte aufzusummieren.
-- Das User-Scoping folgt der bestehenden Konvention: Goals ueber `user=request.user`,
-  Sessions ueber `goal__user=request.user`. Der Besitzer wird bei Sessions
-  weiterhin nicht redundant gespeichert.
-- Es werden **keine** Modell-Aenderungen und damit keine neuen Migrationen
-  vorgenommen; alle benoetigten Felder existieren bereits.
-- Das Frontend bleibt bei reinem CSS im Stil von `base.html` (das Projekt nutzt
-  bewusst kein CSS-Framework); die Balken sind `div`-Elemente mit prozentualer
-  Breite.
-- `TruncWeek` liefert ein `date`-Objekt (Wochenbeginn). Dieses wird im Template
-  als Wochenbeginn formatiert ausgegeben.
-- Tests liegen als `core/tests/test_dashboard.py` neben den bestehenden
-  Testmodulen und folgen deren Aufbau.
+- Basis-Image `python:3.12-slim` passend zur lokal genutzten Python-Version
+  3.12.10; Django 5.2.x, SQLite.
+- `gunicorn` und `whitenoise` werden mit Versionsgrenzen in `requirements.txt`
+  aufgenommen (Stil der bestehenden Eintraege: `>=x,<y`).
+- `ruff` wird als Entwicklungsabhaengigkeit in `requirements-dev.txt` gefuehrt,
+  damit das Laufzeit-Image schlank bleibt und der Linter nicht ins Produktions-
+  Image wandert.
+- Die Aenderungen an `settings.py` bleiben rueckwaertskompatibel: ohne gesetzte
+  Umgebungsvariablen verhaelt sich die lokale Entwicklung exakt wie bisher.
+- Keine Modell-Aenderungen, keine neuen Migrationen.
+- Shell-Script im POSIX-Dialekt (`/bin/sh`), da `slim`-Images keine `bash`
+  garantieren.
 
 **Out-of-Scope**
 
-- Keine Diagramm-Bibliothek (Chart.js, matplotlib o. ae.) und kein Bootstrap.
-- Kein Export der Auswertungen (CSV, PDF) und keine Druckansicht.
-- Keine Filter- oder Zeitraum-Auswahl auf dem Dashboard; es wird immer die
-  vollstaendige Historie ausgewertet.
-- Keine JSON-/REST-API-Endpunkte fuer die Kennzahlen.
-- Keine Auswertung der Ressourcen (`Resource`) und keine KI-Zusammenfassung des
-  Dashboards.
-- Kein Caching der Aggregate.
+- Kein Wechsel des Datenbank-Backends auf PostgreSQL und kein
+  Datenbank-Service in der Compose-Datei.
+- Kein Reverse Proxy (nginx, Traefik) und kein TLS-Terminierung.
+- Kein Push des Images in eine Registry (GHCR, Docker Hub) und kein
+  Multi-Arch-Build.
+- Kein Deployment-Workflow, keine Staging- oder Produktionsumgebung.
+- Keine Coverage-Messung, kein Test-Matrix-Build ueber mehrere Python-Versionen.
+- Kein Health-Check-Endpunkt in der Anwendung und kein `HEALTHCHECK` mit
+  Anwendungslogik.
+- Kein Container-Security-Scan (Trivy, Snyk) in der CI.

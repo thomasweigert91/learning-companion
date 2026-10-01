@@ -38,6 +38,10 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Direkt nach der SecurityMiddleware -- die von WhiteNoise dokumentierte
+    # Position. Liefert die statischen Dateien aus, wenn DEBUG=False ist und
+    # kein Webserver davor steht (Container-Betrieb mit gunicorn).
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -70,11 +74,14 @@ WSGI_APPLICATION = "learning_companion.wsgi.application"
 
 # --- Datenbank --------------------------------------------------------------
 # SQLite fuer die lokale Entwicklung; die Konfiguration bleibt austauschbar.
+# Der Pfad ist ueber DJANGO_DB_PATH umlenkbar: im Container laeuft die Anwendung
+# unprivilegiert und kann nicht nach BASE_DIR schreiben -- SQLite braucht
+# Schreibrechte auf das Verzeichnis, nicht nur auf die Datei (Journal-Datei).
 
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+        "NAME": os.environ.get("DJANGO_DB_PATH") or BASE_DIR / "db.sqlite3",
     }
 }
 
@@ -104,6 +111,19 @@ USE_TZ = True
 # --- Statische Dateien ------------------------------------------------------
 
 STATIC_URL = "static/"
+
+# Ziel von collectstatic. Ohne STATIC_ROOT bricht der Befehl mit
+# ImproperlyConfigured ab -- im Container laeuft er im Entrypoint.
+STATIC_ROOT = os.environ.get("DJANGO_STATIC_ROOT") or BASE_DIR / "staticfiles"
+
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

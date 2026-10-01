@@ -114,14 +114,16 @@ def _call_openai(prompt):
         return antwort.choices[0].message.content or ""
     except APITimeoutError:
         logger.warning("OpenAI-Timeout nach %ss", settings.OPENAI_TIMEOUT_SECONDS)
+        # from None: der Originalfehler steht im Log, die Kette wird bewusst
+        # gekappt, damit kein SDK-Trace in die Oberflaeche durchschlaegt.
         raise AIServiceError(
             "Die KI-Antwort hat zu lange gedauert. Bitte versuche es erneut."
-        )
+        ) from None
     except RateLimitError:
         logger.warning("OpenAI-Rate-Limit erreicht")
         raise AIServiceError(
             "Das Anfragelimit der KI ist erreicht. Bitte versuche es spaeter erneut."
-        )
+        ) from None
     except Exception:
         # Der Originalfehler geht ins Log, nicht in die Oberflaeche: so landen
         # weder Stacktrace noch SDK-Rohtext noch ein Key-Fragment beim Nutzer.
@@ -129,7 +131,7 @@ def _call_openai(prompt):
         raise AIServiceError(
             "Die KI-Funktion ist momentan nicht verfuegbar. "
             "Bitte versuche es spaeter erneut."
-        )
+        ) from None
 
 
 # --- Mock -------------------------------------------------------------------
