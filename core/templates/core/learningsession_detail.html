@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}Lernsitzung &ndash; Learning Companion{% endblock %}
+
+{% block content %}
+    <h1>Lernsitzung vom {{ session.date|date:"d.m.Y" }}</h1>
+
+    <dl>
+        <dt>Lernziel</dt>
+        <dd><a href="{% url 'core:goal_detail' session.goal.pk %}">{{ session.goal.title }}</a></dd>
+
+        <dt>Dauer</dt>
+        <dd>{{ session.duration }} Minuten</dd>
+
+        <dt>Notizen</dt>
+        <dd>{{ session.notes|default:"(keine Notizen)" }}</dd>
+
+        <dt>Tags</dt>
+        <dd>
+            {% if session.tags.all %}
+                <ul>
+                    {% for tag in session.tags.all %}
+                        <li>{{ tag.name }}</li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                (keine Tags)
+            {% endif %}
+        </dd>
+    </dl>
+
+    <p>
+        <a href="{% url 'core:session_edit' session.pk %}">Bearbeiten</a>
+        <a href="{% url 'core:session_delete' session.pk %}">Loeschen</a>
+        <a href="{% url 'core:session_list' %}">Zurueck zur Liste</a>
+    </p>
+{% endblock %}

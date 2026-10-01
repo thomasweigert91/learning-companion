@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}{{ goal.title }} &ndash; Learning Companion{% endblock %}
+
+{% block content %}
+    <h1>{{ goal.title }}</h1>
+
+    <dl>
+        <dt>Status</dt>
+        <dd>{{ goal.get_status_display }}</dd>
+
+        <dt>Beschreibung</dt>
+        <dd>{{ goal.description|default:"(keine Beschreibung)" }}</dd>
+
+        <dt>Angelegt</dt>
+        <dd>{{ goal.created_at|date:"d.m.Y H:i" }}</dd>
+
+        <dt>Zuletzt geaendert</dt>
+        <dd>{{ goal.updated_at|date:"d.m.Y H:i" }}</dd>
+    </dl>
+
+    <h2>Lernsitzungen</h2>
+    {% if goal.sessions.all %}
+        <ul>
+            {% for session in goal.sessions.all %}
+                <li>
+                    <a href="{% url 'core:session_detail' session.pk %}">
+                        {{ session.date|date:"d.m.Y" }}
+                    </a>
+                    &ndash; {{ session.duration }} Minuten
+                </li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <p>Noch keine Lernsitzungen zu diesem Ziel.</p>
+    {% endif %}
+
+    <p>
+        <a href="{% url 'core:goal_edit' goal.pk %}">Bearbeiten</a>
+        <a href="{% url 'core:goal_delete' goal.pk %}">Loeschen</a>
+        <a href="{% url 'core:goal_list' %}">Zurueck zur Liste</a>
+    </p>
+{% endblock %}

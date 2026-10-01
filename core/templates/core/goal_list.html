@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block title %}Lernziele &ndash; Learning Companion{% endblock %}
+
+{% block content %}
+    <h1>Meine Lernziele</h1>
+
+    <form method="get">
+        <label for="status">Status</label>
+        <select name="status" id="status">
+            <option value="">Alle</option>
+            {% for wert, bezeichnung in status_choices %}
+                <option value="{{ wert }}" {% if wert == aktiver_status %}selected{% endif %}>
+                    {{ bezeichnung }}
+                </option>
+            {% endfor %}
+        </select>
+        <button type="submit">Filtern</button>
+        {% if aktiver_status %}
+            <a href="{% url 'core:goal_list' %}">Filter zuruecksetzen</a>
+        {% endif %}
+    </form>
+
+    {% if goals %}
+        <ul>
+            {% for goal in goals %}
+                <li>
+                    <a href="{% url 'core:goal_detail' goal.pk %}">{{ goal.title }}</a>
+                    &ndash; {{ goal.get_status_display }}
+                </li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <p>Keine Lernziele gefunden.</p>
+    {% endif %}
+
+    <a href="{% url 'core:goal_create' %}">Neues Lernziel</a>
+{% endblock %}

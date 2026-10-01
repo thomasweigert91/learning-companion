@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}Lernsitzungen &ndash; Learning Companion{% endblock %}
+
+{% block content %}
+    <h1>Meine Lernsitzungen</h1>
+
+    {% if sessions %}
+        <ul>
+            {% for session in sessions %}
+                <li>
+                    <a href="{% url 'core:session_detail' session.pk %}">
+                        {{ session.date|date:"d.m.Y" }}
+                    </a>
+                    &ndash; {{ session.goal.title }} &ndash; {{ session.duration }} Minuten
+                </li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <p>Noch keine Lernsitzungen erfasst.</p>
+    {% endif %}
+
+    <a href="{% url 'core:session_create' %}">Neue Lernsitzung</a>
+{% endblock %}

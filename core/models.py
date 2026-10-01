@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.urls import reverse
 from django.utils.text import slugify
@@ -48,3 +49,62 @@ class Profile(models.Model):
 
     def get_absolute_url(self):
         return reverse("core:profile_detail")
+
+
+class Goal(models.Model):
+    """Ein Lernziel. Gehoert genau einem Nutzer."""
+
+    class Status(models.TextChoices):
+        PLANNED = "planned", "Geplant"
+        IN_PROGRESS = "in-progress", "In Arbeit"
+        DONE = "done", "Erledigt"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="goals",
+    )
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PLANNED,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        return self.title
+
+    def get_absolute_url(self):
+        return reverse("core:goal_detail", args=[self.pk])
+
+
+class LearningSession(models.Model):
+    """Eine einzelne Lernsitzung zu genau einem Goal.
+
+    Der Besitzer wird bewusst nicht redundant gespeichert, sondern immer ueber
+    goal__user aufgeloest -- so koennen Goal und Session nicht auseinanderlaufen.
+    """
+
+    goal = models.ForeignKey(Goal, on_delete=models.CASCADE, related_name="sessions")
+    date = models.DateField()
+    duration = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)],
+        help_text="Dauer in Minuten",
+    )
+    notes = models.TextField(blank=True)
+    tags = models.ManyToManyField(Tag, blank=True, related_name="sessions")
+
+    class Meta:
+        ordering = ["-date", "-pk"]
+
+    def __str__(self):
+        return f"{self.goal.title} am {self.date:%d.%m.%Y}"
+
+    def get_absolute_url(self):
+        return reverse("core:session_detail", args=[self.pk])

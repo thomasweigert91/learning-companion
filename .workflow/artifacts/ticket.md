@@ -1,67 +1,88 @@
-# Ticket: Django-Projekt "learning_companion" mit App "core", Basis-Authentifizierung und Nutzerprofil
+# Ticket: Goals and Sessions — Lernziele und Lernsitzungen mit CRUD und Status-Filter
 
 ## 1. Problem / Ziel
 
-Es existiert noch keine lauffähige Codebasis. Als Grundlage für alle weiteren Features wird ein Django-Projekt `learning_companion` mit der App `core` benötigt.
+Das Grundgerüst (Projekt `learning_companion`, App `core`, Authentifizierung, Profil) steht. Es fehlt die eigentliche Fachlogik: Nutzer können bislang keine Lernziele erfassen und keine Lernzeit dokumentieren.
 
-Die Basis muss zwei Dinge liefern:
+Dieses Ticket ergänzt zwei Entitäten:
 
-1. **Authentifizierung** – Nutzer können sich registrieren, einloggen und ausloggen.
-2. **Profil** – Zu jedem Nutzer existiert genau ein Profil mit Name, Cohort und Focus Areas (Tags). Nutzer dürfen ausschließlich ihr eigenes Profil sehen und bearbeiten.
+1. **Goal** — ein Lernziel mit Titel, Beschreibung und Status (`planned` / `in-progress` / `done`).
+2. **LearningSession** — eine einzelne Lernsitzung, die an genau ein Goal gebunden ist, mit Datum, Dauer in Minuten, Notizen und Tags.
 
-Ziel ist ein deploybares Grundgerüst, auf dem Lernfunktionen aufbauen können, mit einer von Beginn an korrekt durchgesetzten Zugriffskontrolle (keine fremden Profile sichtbar oder änderbar).
+Für beide Entitäten wird der vollständige CRUD-Zyklus (List, Create, Detail, Edit, Delete) bereitgestellt. Die Goals-Liste ist per Query-Parameter `?status=` nach Status filterbar.
+
+Zentrale Anforderung ist die Mandantentrennung: **Jeder Nutzer sieht und bearbeitet ausschließlich seine eigenen Goals und Sessions.** Das gilt für jede der fünf CRUD-Operationen, für lesende wie schreibende Zugriffe, und muss durch Tests belegt sein — analog zum bereits umgesetzten Profil-Scoping.
 
 ## 2. Akzeptanzkriterien
 
-**Projekt-Setup**
+**Datenmodell Goal**
 
-- [ ] `python manage.py check` läuft im Projektverzeichnis fehlerfrei durch (Exit-Code 0).
-- [ ] Das Django-Projekt heißt `learning_companion`, die App heißt `core` und ist in `INSTALLED_APPS` eingetragen.
-- [ ] `python manage.py migrate` erzeugt alle Tabellen fehlerfrei; für `core` existiert mindestens eine eingecheckte Migrationsdatei.
+- [ ] Es existiert ein Modell `Goal` mit den Feldern: `user` (ForeignKey auf `settings.AUTH_USER_MODEL`, `on_delete=CASCADE`), `title` (CharField, Pflichtfeld), `description` (TextField, optional), `status` (CharField mit `choices`), `created_at` (`auto_now_add`) und `updated_at` (`auto_now`).
+- [ ] `status` erlaubt ausschließlich die Werte `planned`, `in-progress` und `done`; der Default beim Anlegen ist `planned`. Ein abweichender Wert wird von der Modell-Validierung (`full_clean()`) abgelehnt.
+- [ ] `Goal.__str__()` liefert den Titel.
 
-**Profil-Modell**
+**Datenmodell LearningSession**
 
-- [ ] Es existiert ein Modell `Profile` mit den Feldern: `user` (OneToOneField auf `settings.AUTH_USER_MODEL`, `on_delete=CASCADE`), `name` (CharField), `cohort` (CharField) und `focus_areas` (Tags, mehrere Werte pro Profil möglich).
-- [ ] Beim Registrieren eines neuen Nutzers wird automatisch genau ein zugehöriges `Profile` angelegt (Test: nach Registrierung gilt `Profile.objects.filter(user=neuer_user).count() == 1`).
-- [ ] `Profile.__str__()` liefert einen menschenlesbaren Wert (z. B. Username bzw. Name).
+- [ ] Es existiert ein Modell `LearningSession` mit den Feldern: `goal` (ForeignKey auf `Goal`, `on_delete=CASCADE`, `related_name="sessions"`), `date` (DateField), `duration` (PositiveIntegerField, Minuten), `notes` (TextField, optional) und `tags` (Mehrfachauswahl, wiederverwendet das bestehende `Tag`-Modell).
+- [ ] `duration` akzeptiert nur Werte größer als 0; eine Dauer von 0 oder ein negativer Wert wird von `full_clean()` abgelehnt.
+- [ ] Das Löschen eines Goals löscht dessen Sessions mit (Test: nach `goal.delete()` ist `LearningSession.objects.filter(goal_id=<alte_id>).count() == 0`).
+- [ ] `LearningSession.__str__()` liefert einen menschenlesbaren Wert aus Goal-Titel und Datum.
 
-**Authentifizierung**
+**CRUD-Views Goal**
 
-- [ ] Registrierung unter `/accounts/register/`: Ein POST mit gültigen Daten legt einen neuen User an und leitet per Redirect (Status 302) weiter; bei ungültigen Daten (z. B. Username bereits vergeben, Passwörter stimmen nicht überein) wird das Formular mit Status 200 und sichtbarer Fehlermeldung erneut angezeigt und **kein** User angelegt.
-- [ ] Login unter `/accounts/login/`: Korrekte Credentials erzeugen eine authentifizierte Session (Redirect 302); falsche Credentials führen zu Status 200 mit Fehlermeldung und **keiner** Session.
-- [ ] Logout unter `/accounts/logout/` beendet die Session; ein anschließender Aufruf einer geschützten Seite leitet auf die Login-Seite um.
-- [ ] Passwörter werden ausschließlich gehasht gespeichert (Django-Default-Hasher); im Klartext ist kein Passwort in der Datenbank auffindbar.
+- [ ] Für `Goal` existieren fünf erreichbare Views: Liste (`/goals/`), Anlegen (`/goals/new/`), Detail (`/goals/<pk>/`), Bearbeiten (`/goals/<pk>/edit/`) und Löschen (`/goals/<pk>/delete/`).
+- [ ] Die Goals-Liste zeigt einem eingeloggten Nutzer mit Status 200 ausschließlich seine eigenen Goals; Goals anderer Nutzer tauchen weder im Kontext (`object_list`) noch im gerenderten HTML auf.
+- [ ] Beim Anlegen wird das Goal automatisch dem eingeloggten Nutzer zugeordnet; das Feld `user` ist **nicht** Teil des Formulars und kann nicht per POST überschrieben werden (Test: ein POST mit zusätzlichem `user=<fremde_id>` legt das Goal dennoch auf dem eigenen Nutzer an).
+- [ ] Bearbeiten und Löschen des eigenen Goals funktionieren und sind nach dem Vorgang in der Datenbank nachweisbar (geänderte Werte bzw. Datensatz entfernt).
 
-**Zugriffskontrolle (eigenes Profil)**
+**CRUD-Views LearningSession**
 
-- [ ] Eine Profil-Detailansicht zeigt einem eingeloggten Nutzer sein eigenes Profil mit Status 200 inkl. Name, Cohort und Focus Areas.
-- [ ] Eine Profil-Bearbeitungsansicht erlaubt dem eingeloggten Nutzer, `name`, `cohort` und `focus_areas` des **eigenen** Profils zu ändern; nach dem Speichern sind die Werte in der Datenbank aktualisiert.
-- [ ] Ein nicht eingeloggter Aufruf von Profil-Detail oder Profil-Bearbeitung leitet mit Status 302 auf die Login-Seite um.
-- [ ] Ein eingeloggter Nutzer A, der gezielt die Profil-Detail- oder Bearbeitungs-URL eines fremden Profils (Nutzer B) aufruft, erhält Status 404 (oder 403) und kann die Daten von B weder sehen noch verändern — belegt durch einen automatisierten Test.
+- [ ] Für `LearningSession` existieren fünf erreichbare Views: Liste, Anlegen, Detail, Bearbeiten und Löschen.
+- [ ] Die Session-Liste zeigt einem eingeloggten Nutzer ausschließlich Sessions, deren Goal ihm gehört.
+- [ ] Beim Anlegen einer Session stehen im Formularfeld `goal` ausschließlich die eigenen Goals zur Auswahl; ein POST mit der ID eines fremden Goals wird mit einem Formularfehler (Status 200) abgewiesen und legt **keine** Session an.
 
-**Tests**
+**Status-Filter**
 
-- [ ] Automatisierte Tests in `core/tests.py` (oder `core/tests/`) decken ab: Registrierung (Erfolg + Fehlerfall), Login/Logout, automatische Profilerstellung, Zugriff auf eigenes Profil sowie verweigerter Zugriff auf fremdes Profil.
-- [ ] `python manage.py test` läuft vollständig grün durch (Exit-Code 0).
+- [ ] Der Aufruf `/goals/?status=planned` liefert ausschließlich Goals mit Status `planned`; analog für `in-progress` und `done`.
+- [ ] Ohne `status`-Parameter liefert `/goals/` alle eigenen Goals.
+- [ ] Ein ungültiger Wert (z. B. `/goals/?status=unsinn`) führt nicht zu einem Fehler (Status 200) und liefert alle eigenen Goals, als wäre kein Filter gesetzt.
+- [ ] Der Filter wirkt ausschließlich innerhalb der eigenen Daten: `/goals/?status=done` zeigt keine fremden Goals mit Status `done`.
+
+**Scoping und Zugriffskontrolle**
+
+- [ ] Alle zehn CRUD-Views (fünf für Goal, fünf für LearningSession) leiten einen nicht eingeloggten Aufruf mit Status 302 auf die Login-Seite um.
+- [ ] Nutzer A erhält beim Aufruf von Detail, Bearbeiten oder Löschen eines **fremden** Goals (Nutzer B) Status 404; die Daten von B erscheinen nicht in der Response.
+- [ ] Ein POST von Nutzer A auf die Edit-URL eines fremden Goals ändert dessen Daten nicht (Nachweis per `refresh_from_db()` nach dem abgewiesenen Request).
+- [ ] Ein POST von Nutzer A auf die Delete-URL eines fremden Goals löscht dieses nicht; das Goal von B existiert danach weiterhin.
+- [ ] Die vier vorstehenden Scoping-Kriterien gelten gleichermaßen für `LearningSession` und sind dafür separat getestet.
+
+**Tests und Regression**
+
+- [ ] Automatisierte Tests in `core/tests/` decken ab: Modell-Validierung (Status-Choices, Dauer, Kaskadenlöschung), CRUD für beide Entitäten, den Status-Filter inkl. ungültigem Wert sowie das vollständige Scoping (A gegen B) für lesende und schreibende Zugriffe.
+- [ ] Die bestehenden 17 Tests aus Feature 1 (Auth, Profil, Profil-Scoping) laufen unverändert weiter durch.
+- [ ] `python manage.py check` und `python manage.py test` enden mit Exit-Code 0.
+- [ ] Für `core` existiert eine neue, eingecheckte Migration; `python manage.py makemigrations --check --dry-run` meldet keine ausstehenden Änderungen.
 
 ## 3. Technische Rahmenbedingungen & Out-of-Scope
 
 **Rahmenbedingungen**
 
-- Python 3.11+, Django 5.x (LTS-nah), Standard-ORM.
-- Datenbank: SQLite für die lokale Entwicklung (`db.sqlite3`); die Konfiguration bleibt austauschbar.
-- Es wird das Django-Standard-`User`-Modell verwendet; das Profil wird per `OneToOneField` angebunden (kein Custom User Model).
-- Authentifizierung baut auf `django.contrib.auth` auf (`LoginView`, `LogoutView`, `UserCreationForm`); keine Eigenimplementierung von Login/Passwort-Logik.
-- `focus_areas` wird als Tag-Liste modelliert — Umsetzung über eine eigene `Tag`-Model-Klasse mit `ManyToManyField` (bevorzugt, DB-unabhängig) oder eine äquivalente Tag-Lösung; die konkrete Wahl trifft die technische Planung.
-- Zugriffsschutz über `LoginRequiredMixin` / `@login_required`; die Objektauswahl erfolgt grundsätzlich über `request.user` (kein Profil-Lookup allein über eine URL-PK).
-- Templates: einfache, serverseitig gerenderte Django-Templates; `SECRET_KEY` und `DEBUG` werden über Umgebungsvariablen konfigurierbar gehalten.
-- `requirements.txt` und eine `.gitignore` (mind. `db.sqlite3`, `__pycache__/`, `.env`) gehören zum Lieferumfang.
+- Bestehender Stack unverändert: Python 3.12, Django 5.2, SQLite, serverseitig gerenderte Django-Templates, keine zusätzlichen Abhängigkeiten in `requirements.txt`.
+- Beide Modelle werden in der bestehenden App `core` ergänzt; es wird **keine** neue App angelegt.
+- `tags` auf `LearningSession` verwendet das bereits existierende `Tag`-Modell per `ManyToManyField` weiter — kein zweites Tag-Konzept, kein `ArrayField` (PostgreSQL-only).
+- Das Scoping folgt dem im Profil-Feature etablierten Muster: `LoginRequiredMixin` plus ein `get_queryset()`, das generell auf `request.user` filtert. Ein fremder PK ergibt damit strukturell 404 statt einer nachgelagerten Berechtigungsprüfung.
+- Die Zuordnung `user` wird serverseitig in `form_valid()` aus `request.user` gesetzt und ist nie Teil des Formulars.
+- Der Status-Filter liest `request.GET.get("status")` und wird gegen die definierten Choices validiert; unbekannte Werte werden ignoriert statt zu einem Fehler zu führen.
+- Löschen erfolgt über Django-`DeleteView` per POST mit Bestätigungsseite (kein Löschen per GET).
+- `status` wird über `models.TextChoices` definiert, damit Choices, Labels und Validierung aus einer Quelle stammen.
 
 **Out-of-Scope**
 
-- Keine REST-API (kein Django REST Framework), keine SPA, kein JavaScript-Frontend.
-- Kein Passwort-Reset per E-Mail, keine E-Mail-Verifizierung, kein Social Login / OAuth, keine 2FA.
-- Keine Rollen- oder Rechteverwaltung über das eigene Profil hinaus (kein Admin-Zugriff auf fremde Profile als Feature).
-- Keine Lern-/Companion-Fachlogik (Kurse, Fortschritt, Empfehlungen) — nur das Grundgerüst.
-- Kein CI/CD, kein Docker, kein Deployment auf einen Server, kein produktives Logging/Monitoring.
-- Kein individuelles UI-Design / CSS-Framework; Styling ist minimal.
+- Keine REST-API, kein Django REST Framework, kein JavaScript-Frontend.
+- Keine Auswertungen, Statistiken, Diagramme oder Zeit-Aggregationen über Sessions.
+- Kein Timer und keine laufende Zeiterfassung — `duration` wird manuell eingetragen.
+- Keine Erinnerungen, Benachrichtigungen oder E-Mails.
+- Kein Teilen von Goals zwischen Nutzern, keine Kollaboration, keine Sichtbarkeits-Einstellungen.
+- Keine Pflege-Oberfläche für `Tag` im Frontend; Tags werden weiterhin über das Django-Admin angelegt.
+- Keine Pagination und keine Sortier-Oberfläche auf den Listen; nur der geforderte Status-Filter.
+- Kein individuelles UI-Design oder CSS-Framework; Styling bleibt minimal.

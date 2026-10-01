@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}Lernsitzung loeschen &ndash; Learning Companion{% endblock %}
+
+{% block content %}
+    <h1>Lernsitzung loeschen</h1>
+
+    <p>
+        Soll die Lernsitzung vom {{ session.date|date:"d.m.Y" }}
+        zum Ziel &bdquo;{{ session.goal.title }}&ldquo; wirklich geloescht werden?
+    </p>
+
+    {# Geloescht wird ausschliesslich per POST, nie per GET. #}
+    <form method="post">
+        {% csrf_token %}
+        <button type="submit">Endgueltig loeschen</button>
+    </form>
+
+    <a href="{% url 'core:session_detail' session.pk %}">Abbrechen</a>
+{% endblock %}

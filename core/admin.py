@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from core.models import Profile, Tag
+from core.models import Goal, LearningSession, Profile, Tag
 
 
 @admin.register(Tag)
@@ -14,3 +14,18 @@ class ProfileAdmin(admin.ModelAdmin):
     list_display = ("user", "name", "cohort")
     search_fields = ("user__username", "name", "cohort")
     filter_horizontal = ("focus_areas",)
+
+
+@admin.register(Goal)
+class GoalAdmin(admin.ModelAdmin):
+    list_display = ("title", "user", "status", "updated_at")
+    list_filter = ("status",)
+    search_fields = ("title", "description", "user__username")
+
+
+@admin.register(LearningSession)
+class LearningSessionAdmin(admin.ModelAdmin):
+    list_display = ("goal", "date", "duration")
+    list_filter = ("date",)
+    search_fields = ("goal__title", "notes")
+    filter_horizontal = ("tags",)
