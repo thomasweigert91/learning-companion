@@ -140,3 +140,37 @@ class Resource(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class AIFeedback(models.Model):
+    """Ein gespeichertes KI-Ergebnis zu genau einem Goal.
+
+    Wie bei LearningSession und Resource wird der Besitzer nicht redundant
+    gespeichert, sondern immer ueber goal__user aufgeloest.
+    """
+
+    class FeedbackType(models.TextChoices):
+        # Bewusst nicht "Fortschrittszusammenfassung"/"Naechste Lernschritte":
+        # das sind die Ueberschriften des Ergebnisbereichs der Detailseite.
+        SUMMARY = "summary", "Zusammenfassung"
+        NEXT_STEPS = "next_steps", "Naechste Schritte"
+
+    goal = models.ForeignKey(Goal, on_delete=models.CASCADE, related_name="ai_feedbacks")
+    feedback_type = models.CharField(max_length=20, choices=FeedbackType.choices)
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # -pk als Tiebreaker: zwei Eintraege mit identischem Zeitstempel haetten
+        # sonst keine definierte Reihenfolge.
+        ordering = ["-created_at", "-pk"]
+        verbose_name = "KI-Feedback"
+        verbose_name_plural = "KI-Feedbacks"
+
+    def __str__(self):
+        return f"{self.get_feedback_type_display()} zu {self.goal.title}"
+
+    @property
+    def steps(self):
+        """Naechste Schritte als Liste -- gespeichert wird eine Zeile pro Schritt."""
+        return [zeile.strip() for zeile in self.content.splitlines() if zeile.strip()]

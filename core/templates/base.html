@@ -55,6 +55,33 @@
            lesen die Caption trotz Clipping weiterhin vor. */
         .table-responsive { overflow-y: hidden; }
 
+        /* KI-Verlauf: vertikale Linie mit einem Punkt je Eintrag, Farbe nach Typ.
+           Die Farbe ist nur Zierde -- der Typ steht als Text im Badge. */
+        .lc-timeline { position: relative; padding-left: 1.5rem; }
+        .lc-timeline::before {
+            content: "";
+            position: absolute;
+            top: .4rem;
+            bottom: .4rem;
+            left: .4rem;
+            border-left: 2px solid var(--bs-border-color);
+        }
+        .lc-timeline-item { position: relative; padding-bottom: 1.25rem; }
+        .lc-timeline-item:last-child { padding-bottom: 0; }
+        .lc-timeline-item::before {
+            content: "";
+            position: absolute;
+            top: .35rem;
+            left: -1.45rem;
+            width: .75rem;
+            height: .75rem;
+            border-radius: 50%;
+            border: 2px solid var(--bs-body-bg);
+            background: var(--bs-secondary);
+        }
+        .lc-timeline-summary::before    { background: var(--bs-info); }
+        .lc-timeline-next_steps::before { background: var(--bs-warning); }
+
         .lc-lift { transition: transform .15s ease, box-shadow .15s ease; }
         .lc-lift:hover { transform: translateY(-2px); box-shadow: var(--bs-box-shadow) !important; }
         @media (prefers-reduced-motion: reduce) {
@@ -138,11 +165,14 @@
     {% if messages %}
         <div class="messages">
             {% for message in messages %}
+                {# Meldungen des KI-Verlaufs zeigt der Abschnitt #ki-verlauf selbst (core/_ai_timeline.html). #}
+                {% if "ki-verlauf" not in message.extra_tags %}
                 <div class="alert alert-{% if message.level_tag == 'error' %}danger{% elif message.level_tag == 'debug' %}secondary{% else %}{{ message.level_tag }}{% endif %} alert-dismissible fade show"
                      role="{% if message.level_tag == 'error' %}alert{% else %}status{% endif %}">
                     {{ message }}
                     <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Meldung schliessen"></button>
                 </div>
+                {% endif %}
             {% endfor %}
         </div>
     {% endif %}

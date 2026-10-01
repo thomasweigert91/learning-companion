@@ -1,144 +1,129 @@
-# Ticket: UI- und Styling-Upgrade auf Bootstrap 5
+# Ticket: Persistente KI-Historie zu Lernzielen
 
 ## 1. Problem / Ziel
 
-Die Oberflaeche der Anwendung besteht aus ungestyltem HTML: Formulare werden per
-`{{ form.as_p }}` ausgegeben, Listen als nackte `<ul>`, die Navigation als lose
-Reihe von Links. Funktional ist alles vorhanden, die App wirkt aber unfertig,
-ist auf Mobilgeraeten muehsam zu bedienen und gibt kaum visuelle Orientierung
-(aktuelle Seite, Status eines Ziels, Fehlerzustaende).
+Die KI-Aktionen "Zusammenfassung generieren" und "Naechste Schritte vorschlagen"
+legen ihr Ergebnis bisher nur in der **Session** ab. Das hat drei Folgen:
 
-Dieses Ticket stellt **alle Seiten** auf ein einheitliches, responsives
-Bootstrap-5-Design um -- Navigation, Startseite, Auth, Profil, Dashboard, Goals,
-Sessions und Resources. Es ist ein reines Darstellungs-Feature: URLs,
-Formularfelder, Feldnamen, HTML-IDs und das Verhalten der Views bleiben
-unveraendert.
+- Nach Logout, Session-Ablauf oder Browserwechsel ist das Ergebnis verloren.
+- Pro Goal und Typ existiert immer nur das **letzte** Ergebnis; jede neue Anfrage
+  ueberschreibt die vorherige. Ein Verlauf -- etwa wie sich die Einschaetzung
+  ueber die Wochen veraendert hat -- ist nicht nachvollziehbar.
+- Seit dem echten API-Anschluss kostet jede Anfrage Geld. Ein Ergebnis, das beim
+  naechsten Login weg ist, muss erneut bezahlt werden.
 
-**Bewusste Abkehr von einer frueheren Entscheidung:** In Feature 5 wurde das
-Dashboard noch "bewusst ohne CSS-Framework" gebaut, weil ein Framework fuer ein
-einzelnes Feature die Architektur gebrochen haette. Mit diesem Ticket wird das
-Framework fuer die **gesamte** Oberflaeche eingefuehrt; die handgeschriebenen
-Dashboard-Styles (`.kpi-card`, `.bar` usw.) werden dabei ersetzt, nicht
-parallel weitergefuehrt.
+Dieses Ticket speichert jedes erfolgreich erzeugte KI-Ergebnis dauerhaft in der
+Datenbank und zeigt alle Ergebnisse eines Goals als chronologische Historie auf
+der Goal-Detailseite. Einzelne Eintraege und der gesamte Verlauf eines Goals
+lassen sich loeschen -- ausschliesslich durch den Besitzer des Goals.
+
+**Bewusste Vertragsaenderung:** Feature 4 hat per Test festgeschrieben, dass
+KI-Ergebnisse *nicht* in der Datenbank landen
+(`test_results_are_not_persisted_in_database`) und stattdessen in der Session
+liegen. Genau diese Anforderung kehrt sich hier um. Die vier Tests, die den
+Session-Speicher pruefen, werden deshalb auf den neuen Datenbank-Vertrag
+umgestellt -- nicht abgeschwaecht, sondern auf das neue Verhalten gerichtet.
+
+**Vorab-Aufgabe (im selben Durchlauf erledigt):** `settings.py` laedt die lokale
+`.env` per `python-dotenv`, damit `python manage.py runserver` den API-Schluessel
+ohne manuelles Setzen der Umgebung erhaelt.
 
 ## 2. Akzeptanzkriterien
 
-### Einbindung
+### Vorab: .env-Unterstuetzung
 
-- [ ] `base.html` bindet Bootstrap **5.3.8** (CSS + `bootstrap.bundle.min.js`)
-      und Bootstrap Icons **1.13.1** per jsDelivr-CDN ein.
-- [ ] Alle drei CDN-Ressourcen tragen ein `integrity`-Attribut (SHA-384, aus den
-      tatsaechlich ausgelieferten Dateien berechnet) und `crossorigin="anonymous"`.
-- [ ] Das Bundle-Script wird am Ende von `<body>` geladen und blockiert damit
-      nicht das Rendern.
+- [ ] `python-dotenv` steht mit Versionsgrenze in `requirements.txt`;
+      `settings.py` laedt `BASE_DIR / ".env"` vor dem Lesen jeder Einstellung.
+- [ ] Bereits gesetzte Umgebungsvariablen haben Vorrang (`override=False`), damit
+      Container und CI unveraendert aus der echten Umgebung lesen.
+- [ ] Ein Testlauf erreicht **nie** das echte OpenAI-Konto, auch wenn die `.env`
+      einen echten Schluessel enthaelt: ein Test-Runner erzwingt global
+      `AI_MOCK_MODE=True` und einen leeren Schluessel; ein Test belegt das.
 
-### Navigation
+### Modell
 
-- [ ] Responsive Navbar (`navbar-expand-lg`) mit Toggler; unterhalb von `lg`
-      klappt die Navigation in ein Collapse-Menue.
-- [ ] Fuer angemeldete Nutzer: Links **Dashboard**, **Goals**, **Sessions**.
-      Der Link des aktuellen Bereichs ist hervorgehoben (`.active`) **und**
-      traegt `aria-current="page"`. Zum Bereich "Goals" zaehlen auch
-      Goal-Detail/-Formulare und die Resource-Routen, zu "Sessions" alle
-      Session-Routen.
-- [ ] User-Dropdown rechts mit dem Benutzernamen, darin "Mein Profil",
-      "Profil bearbeiten" und "Logout". Logout bleibt ein **POST**-Formular mit
-      CSRF-Token (Django 5 akzeptiert kein GET-Logout).
-- [ ] Fuer anonyme Nutzer: "Login" und "Registrieren" statt des Dropdowns.
-- [ ] Der bestehende Test `test_navbar_enthaelt_dashboard_link`
-      (`href="/dashboard/"`) bleibt gruen.
+- [ ] Neues Modell `AIFeedback` mit `goal` (ForeignKey auf `Goal`,
+      `on_delete=CASCADE`, `related_name="ai_feedbacks"`), `feedback_type`
+      (Choices `summary` / `next_steps`), `content` (TextField) und `created_at`
+      (DateTimeField, `auto_now_add=True`).
+- [ ] Standard-Sortierung: neueste zuerst (`-created_at`, `-pk` als
+      Tiebreaker fuer gleiche Zeitstempel).
+- [ ] Naechste Schritte werden zeilenweise in `content` abgelegt; eine Property
+      `steps` liefert sie wieder als Liste.
+- [ ] Wie bei `LearningSession` und `Resource` wird der Besitzer **nicht**
+      redundant gespeichert, sondern immer ueber `goal__user` aufgeloest.
+- [ ] Die Migration `0004_aifeedback` ist erzeugt und angewendet;
+      `makemigrations --check` meldet danach keine offenen Aenderungen.
+- [ ] Das Modell ist im Django-Admin registriert.
 
-### Layout & Komponenten
+### Speichern
 
-- [ ] Inhalte liegen in einem `container` mit responsivem vertikalem Spacing;
-      Django-Messages erscheinen als schliessbare Bootstrap-Alerts, wobei der
-      Message-Level `error` auf `alert-danger` abgebildet wird.
-- [ ] **Auth (Login, Registrierung):** zentrierte Card, volle Button-Breite,
-      Formularfelder als `form-control` mit zugeordnetem `<label>`.
-- [ ] **Profil-Ansicht:** Card mit Initialen-Avatar, Name, Cohort und den Focus
-      Areas als Badges; Button "Profil bearbeiten".
-- [ ] **Profil-Bearbeiten, Goal-Formular, Session-Formular:** Formular in einer
-      Card; Mehrfachauswahlen (Focus Areas, Tags) als `<fieldset>` mit
-      `<legend>`, die Checkboxen als anklickbare Chips.
-- [ ] **Dashboard:** drei KPI-Statistikkarten mit Icon; die drei Auswertungen
-      als Tabellen in Cards; die bisherigen CSS-Balken werden durch Bootstrap-
-      `progress`-Balken ersetzt. Die Leerzustands-Texte bleiben **wortgleich**.
-- [ ] **Goals-Liste:** Status-Filter als `form-select` (ID `status` bleibt),
-      Goals als responsives Card-Grid mit farbigem Status-Badge und den
-      Aktions-Buttons Details / Bearbeiten / Loeschen.
-- [ ] **Goal-Detail:** Kopfbereich mit Titel, Status-Badge und Aktionen;
-      Sessions als Tabelle; Ressourcen als List-Group mit Typ-Badge; KI-Bereich
-      als eigene Card.
-- [ ] **Sessions-Liste:** Uebersichtstabelle mit Datum, Lernziel, Dauer und den
-      Tags als Badges. Die Tags werden per `prefetch_related("tags")` geladen,
-      damit die Tabelle keine N+1-Abfragen erzeugt.
-- [ ] **Session-Detail & Loesch-Bestaetigungen:** Card-Layout; destruktive
-      Aktionen als `btn-danger`, Abbrechen als sekundaerer Button.
-- [ ] **Startseite:** Hero-Bereich fuer anonyme Nutzer, Schnellzugriffs-Cards fuer
-      angemeldete Nutzer.
+- [ ] Beide KI-Aktionen legen bei Erfolg **genau einen** `AIFeedback`-Eintrag mit
+      dem passenden Typ an.
+- [ ] Schlaegt der Aufruf fehl (`AIServiceError`), wird **nichts** gespeichert;
+      die Fehlermeldung erscheint wie bisher.
+- [ ] Der Session-Speicher entfaellt vollstaendig; es bleiben keine toten
+      Session-Schluessel zurueck.
+- [ ] `ai_service` bleibt datenbankfrei (bestehender Vertrag und Test
+      `test_service_does_not_touch_database`); gespeichert wird in der View.
+- [ ] Auch Ergebnisse des Mock-Modus werden gespeichert -- sie sind im Text
+      bereits als "[Mock-Modus]" gekennzeichnet.
 
-### Formulare
+### Anzeige
 
-- [ ] Formularfelder werden ueber **ein** wiederverwendbares Partial gerendert,
-      das je nach Widget-Typ `form-control`, `form-select` oder
-      `form-check-input` vergibt -- ohne `forms.py` anzufassen.
-- [ ] Feldfehler stehen direkt unter dem Feld (`invalid-feedback`), das Feld
-      erhaelt `is-invalid` und `aria-invalid="true"`; ueber `aria-describedby`
-      sind Fehlertext und Hilfetext mit dem Feld verknuepft.
-- [ ] Pflichtfelder sind visuell markiert, der Hinweis darauf steht am Formular.
+- [ ] Die Goal-Detailseite zeigt in der KI-Card wie bisher das jeweils
+      **neueste** Ergebnis je Typ ("Fortschrittszusammenfassung",
+      "Naechste Lernschritte") -- jetzt aus der Datenbank und mit Datum.
+- [ ] Darunter steht ein Abschnitt "KI-Verlauf" (Anker `#ki-verlauf`) als
+      Timeline aller Eintraege, neueste zuerst, jeweils mit Datum/Uhrzeit
+      (`<time datetime=...>`), Typ-Badge und formatiertem Text
+      (Zusammenfassung mit Zeilenumbruechen, Schritte als nummerierte Liste).
+- [ ] Ohne Eintraege zeigt der Abschnitt einen Leerzustand statt einer leeren
+      Timeline.
+- [ ] Die Historie wird mit einer festen Anzahl von Abfragen geladen, unabhaengig
+      von der Zahl der Eintraege (keine N+1-Abfragen).
+- [ ] Ergebnisse eines Goals erscheinen nie auf der Seite eines anderen Goals.
 
-### Barrierefreiheit
+### Loeschen
 
-- [ ] Skip-Link "Zum Inhalt springen" als erstes fokussierbares Element.
-- [ ] Alle rein dekorativen Icons tragen `aria-hidden="true"`; Buttons, die nur
-      ein Icon zeigen, haben ein `aria-label` bzw. einen `visually-hidden`-Text.
-- [ ] Tabellen haben `<th scope="col">` und eine (ggf. visuell versteckte)
-      `<caption>`.
-- [ ] Progress-Balken tragen `role="progressbar"`, `aria-label` und
-      `aria-valuenow`/`-min`/`-max`.
-- [ ] Links mit `target="_blank"` kuendigen das neue Fenster fuer Screenreader an.
-- [ ] Jede Seite hat genau eine `<h1>`; Status wird nie **nur** ueber Farbe
-      transportiert (Badges enthalten immer den Text).
+- [ ] Jeder Eintrag hat einen Loeschen-Button (POST, CSRF, `aria-label` mit
+      Typ und Datum); danach Redirect zurueck auf `#ki-verlauf` mit
+      Erfolgsmeldung.
+- [ ] "Alle zuruecksetzen" fuehrt auf eine Bestaetigungsseite (GET) und loescht
+      erst per POST alle Eintraege **dieses** Goals -- Eintraege anderer Goals
+      desselben Nutzers bleiben unberuehrt.
+- [ ] Beide Loesch-Routen erfordern Login und liefern fuer fremde Eintraege bzw.
+      fremde Goals **404**, ohne etwas zu loeschen. Ein GET auf die
+      Einzel-Loesch-Route loest keine Loeschung aus (405).
+- [ ] Wird ein Goal geloescht, verschwindet seine KI-Historie mit (CASCADE); die
+      Loesch-Bestaetigung des Goals weist darauf hin.
 
-### Regressionsschutz
+### Tests
 
-- [ ] Alle **145** bestehenden Tests laufen unveraendert gruen; es wird kein Test
-      angepasst, um ihn gruen zu bekommen.
-- [ ] Keine Aenderung an URLs, Formularfeldern oder Feldnamen; alle bisherigen
-      expliziten HTML-IDs (`status`) und die von Tests gepruefte CSS-Klasse
-      `badge-{typ}` bleiben erhalten.
-- [ ] Die Texte "Fortschrittszusammenfassung" und "Naechste Lernschritte"
-      erscheinen weiterhin **nur**, wenn ein KI-Ergebnis vorliegt
-      (`test_ai_views` prueft deren Abwesenheit).
-- [ ] Neue Tests sichern die Kernpunkte des Redesigns ab: Bootstrap-Einbindung
-      mit SRI, aktiver Nav-Link mit `aria-current`, Logout als POST im Dropdown,
-      Formular-Fehlerdarstellung mit `is-invalid`/`aria-invalid` und die
-      Template-Tags/-Filter.
+- [ ] Neue Tests belegen: Persistierung je Typ, keine Persistierung im
+      Fehlerfall, Sortierung, `steps`-Property, Anzeige von Historie und
+      Leerzustand, Abfrage-Anzahl unabhaengig von der Eintragszahl, Loeschen
+      einzeln und gesamt, Login-Pflicht, 404 bei fremden Daten ohne Loeschung,
+      CASCADE beim Goal-Loeschen.
+- [ ] Alle Tests laufen im Mock-Modus bzw. mit gepatchtem SDK -- deterministisch
+      und kostenlos.
+- [ ] Alle uebrigen Bestandstests bleiben unveraendert gruen.
 
 ## 3. Technische Rahmenbedingungen & Out-of-Scope
 
 **Rahmenbedingungen**
 
-- Bootstrap 5.3.8 und Bootstrap Icons 1.13.1 ausschliesslich per CDN, keine
-  lokale Kopie und kein Build-Schritt (kein npm, kein Sass).
-- Die Formular-Klassen werden ueber einen Template-Filter in
-  `core/templatetags/` vergeben, nicht ueber `widgets`/`attrs` in `forms.py`.
-  Damit erfasst die Loesung auch Django-eigene Formulare wie das
-  `AuthenticationForm` des Logins, ohne die URL-Konfiguration zu aendern.
-- Die einzige Aenderung an Python-Code ausserhalb von `templatetags/` ist das
-  `prefetch_related("tags")` in der Session-Liste.
-- Die bestehende Textkonvention der Templates (Umlaute als `ae`/`oe`/`ue`)
-  bleibt erhalten; mehrere Tests pruefen exakte Texte.
-- Ohne Internetzugang laedt kein Styling; die Anwendung bleibt aber voll
-  funktionsfaehig (reines HTML mit nativen Formularen, Logout als normales
-  POST-Formular).
+- Django 5.2, SQLite; eine neue Migration, keine Aenderung an bestehenden Tabellen.
+- UI im bestehenden Bootstrap-5-Stil aus Feature 7; neue Routen fuegen sich in
+  die Navigationsbereiche ein (Goal-Routen markieren "Goals").
+- Bestehende Texte, auf die Tests pruefen, bleiben wortgleich.
 
 **Out-of-Scope**
 
-- Kein Dark-Mode und kein Theme-Umschalter.
-- Kein Austausch der Texte gegen echte Umlaute und keine Internationalisierung.
-- Keine JavaScript-Interaktion ueber Bootstraps eigene Komponenten hinaus
-  (keine Modals fuer Loesch-Bestaetigungen, kein AJAX).
-- Kein Redesign des Django-Admins.
-- Keine eigenen Grafiken, Logos oder Webfonts ueber die Bootstrap Icons hinaus.
-- Keine Aenderungen an Modellen, Formularen, URLs oder Migrationen.
+- Kein Bearbeiten von KI-Eintraegen.
+- Kein Paginieren, Filtern oder Durchsuchen der Historie.
+- Keine Kostenerfassung, kein Token-Zaehler, kein Rate-Limit pro Nutzer.
+- Kein Export der Historie.
+- Keine Uebernahme alter Session-Ergebnisse in die Datenbank (sie sind
+  fluechtig und verfallen ohnehin).
+- Keine Aenderung an Prompts, Modell oder Fehlerbehandlung des KI-Service.

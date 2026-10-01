@@ -5,9 +5,8 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from core.models import Goal, LearningSession, Resource
+from core.models import AIFeedback, Goal, LearningSession, Resource
 from core.services.ai_service import AIServiceError
-from core.views import AI_NEXT_STEPS_KEY, AI_SUMMARY_KEY
 
 User = get_user_model()
 
@@ -86,7 +85,7 @@ class AktionenUndAnzeigeTests(AIViewTestCase):
         )
 
         detail = self.client.get(reverse("core:goal_detail", args=[self.goal_a.pk]))
-        schritte = detail.context["ai_next_steps"]
+        schritte = detail.context["ai_next_steps"].steps
 
         self.assertGreaterEqual(len(schritte), 2)
         self.assertLessEqual(len(schritte), 3)
@@ -99,8 +98,7 @@ class AktionenUndAnzeigeTests(AIViewTestCase):
 
                 self.assertEqual(response.status_code, 405)
 
-        self.assertNotIn(AI_SUMMARY_KEY, self.client.session)
-        self.assertNotIn(AI_NEXT_STEPS_KEY, self.client.session)
+        self.assertEqual(AIFeedback.objects.count(), 0)
 
     def test_no_result_block_before_first_use(self):
         response = self.client.get(reverse("core:goal_detail", args=[self.goal_a.pk]))
@@ -119,14 +117,22 @@ class AktionenUndAnzeigeTests(AIViewTestCase):
         self.assertNotIn("ai_summary", response.context)
         self.assertNotContains(response, "Fortschrittszusammenfassung")
 
-    def test_results_are_not_persisted_in_database(self):
+    def test_results_are_persisted_per_type(self):
+        # Feature 8 kehrt den frueheren Vertrag (nur Session, nie DB) bewusst um.
         self.client.post(reverse("core:goal_ai_summary", args=[self.goal_a.pk]))
         self.client.post(reverse("core:goal_ai_next_steps", args=[self.goal_a.pk]))
 
-        # Die Ergebnisse liegen in der Session, nicht an den Fachobjekten.
+        self.assertEqual(
+            sorted(
+                AIFeedback.objects.filter(goal=self.goal_a).values_list(
+                    "feedback_type", flat=True
+                )
+            ),
+            ["next_steps", "summary"],
+        )
+        # Gespeichert wird neben dem Goal, das Goal selbst bleibt unveraendert.
         self.goal_a.refresh_from_db()
         self.assertEqual(self.goal_a.title, "Ziel von A")
-        self.assertIn(AI_SUMMARY_KEY, self.client.session)
 
 
 @override_settings(AI_MOCK_MODE=True, OPENAI_API_KEY="")
@@ -176,7 +182,7 @@ class FehlerpfadTests(AIViewTestCase):
 
         self.assertEqual(response.status_code, 302)
 
-    def test_failed_action_leaves_no_result_in_session(self):
+    def test_failed_action_leaves_no_result(self):
         with patch(
             "core.services.ai_service.suggest_next_steps",
             side_effect=AIServiceError("Fehlgeschlagen"),
@@ -185,7 +191,7 @@ class FehlerpfadTests(AIViewTestCase):
                 reverse("core:goal_ai_next_steps", args=[self.goal_a.pk])
             )
 
-        self.assertNotIn(AI_NEXT_STEPS_KEY, self.client.session)
+        self.assertEqual(AIFeedback.objects.count(), 0)
 
 
 @override_settings(AI_MOCK_MODE=True, OPENAI_API_KEY="")
@@ -232,5 +238,10 @@ class ScopingTests(AIViewTestCase):
 
         self.assertEqual(zusammenfassung.status_code, 302)
         self.assertEqual(schritte.status_code, 302)
-        self.assertIn(AI_SUMMARY_KEY, self.client.session)
-        self.assertIn(AI_NEXT_STEPS_KEY, self.client.session)
+        self.assertEqual(
+            AIFeedback.objects.filter(goal=self.goal_a, feedback_type="summary").count(), 1
+        )
+        self.assertEqual(
+            AIFeedback.objects.filter(goal=self.goal_a, feedback_type="next_steps").count(),
+            1,
+        )

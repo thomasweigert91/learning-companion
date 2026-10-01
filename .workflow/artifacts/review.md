@@ -1,167 +1,160 @@
-# Code Review: UI- und Styling-Upgrade auf Bootstrap 5
+# Code Review: Persistente KI-Historie zu Lernzielen (+ Vorab: .env-Unterstützung)
 
 **Status: APPROVED**
 
 Geprüft gegen `.workflow/artifacts/ticket.md` und `.workflow/artifacts/plan.md`.
-Stand: Django 5.2.17, Bootstrap 5.3.8, Bootstrap Icons 1.13.1.
-**175 Tests** (145 Bestand + 30 neu), `ruff check .` ohne Befund, `validate_code.ps1` Exit-Code 0.
+Stand: Django 5.2.17, python-dotenv 1.2.4. **199 Tests** (175 Bestand + 1 Schutztest + 23 neu), `ruff check .` ohne Befund, `makemigrations --check` sauber, `validate_code.ps1` Exit-Code 0.
 
-> **Geprüft wurde nicht nur das HTML, sondern die gerenderte Oberfläche.** Tests sehen nicht, ob CSS im Browser tatsächlich ankommt — ein falscher SRI-Hash etwa würde das Stylesheet stillschweigend verwerfen. Deshalb wurden alle Seitentypen mit Playwright in Desktop- (1280 px) und Handybreite (390 px) aufgerufen, gemessen und als Screenshot begutachtet. Dabei wurde ein Darstellungsfehler gefunden und behoben (Abschnitt 4).
+> **Kostenschutz während des gesamten Durchlaufs:** Der Dev-Server lief mit echtem OpenAI-Schlüssel. Weder Tests noch Sichtprüfung haben die API erreicht: Tests laufen über den neuen `OfflineTestRunner`, die Sichtprüfung nutzte direkt angelegte Datenbank-Einträge und hat keinen KI-Button ausgelöst.
 
 ---
 
-## 1. Vollständigkeit
+## 1. Vorab-Aufgabe: `.env` per python-dotenv
 
-### Abdeckung der Seiten
-
-| Bereich | Templates | Umgesetzt |
+| Kriterium | Nachweis | Erfüllt |
 |---|---|---|
-| Navigation | `base.html`, `_nav_link.html` | Navbar mit Collapse, aktiver Bereich, User-Dropdown, Skip-Link, Alerts, Footer |
-| Startseite | `home.html`, `_home_card.html` | Hero (anonym), Schnellzugriffs-Cards (angemeldet) |
-| Auth | `login.html`, `register.html` | zentrierte Cards, `form-control`, volle Button-Breite |
-| Profil | `profile_detail.html`, `profile_form.html` | Avatar-Card mit Focus-Area-Badges; Formular-Card mit Chips |
-| Dashboard | `dashboard.html` | 3 KPI-Karten, 3 Tabellen-Cards mit `progress`-Balken |
-| Goals | `goal_list.html`, `goal_detail.html`, `goal_form.html`, `goal_confirm_delete.html`, `_status_badge.html` | Card-Grid mit Status-Badges und Aktionen; Detail mit Sessions-Tabelle, Ressourcen, KI-Card |
-| Sessions | `learningsession_list.html`, `…_detail.html`, `…_form.html`, `…_confirm_delete.html` | Tabelle mit Tag-Badges; Detail-Card; Formular mit Chips |
-| Resources | `_resource_list.html`, `resource_confirm_delete.html` | List-Group mit Typ-Badges; Lösch-Card |
-| Formulare (alle) | `_form.html` + `core/templatetags/ui.py` | ein Partial für alle sechs Formulare inkl. Djangos `AuthenticationForm` |
+| `python-dotenv` mit Versionsgrenze | `requirements.txt`: `python-dotenv>=1.0,<2.0`, installiert 1.2.4 | ja |
+| `.env` wird vor allen Einstellungen geladen | `load_dotenv(BASE_DIR / ".env")` direkt nach `BASE_DIR`; frischer `manage.py shell`-Prozess ohne manuell gesetzte Variable → Schlüssel geladen, `is_mock_mode() == False` | ja |
+| Echte Umgebung hat Vorrang | `override=False` (Default) — Container und CI lesen weiter ihre echten Variablen; eine `.env` existiert dort nicht (`.dockerignore`, nicht versioniert) | ja |
+| Tests erreichen nie das echte Konto | `OfflineTestRunner` erzwingt `AI_MOCK_MODE=True` und leeren Schlüssel; `test_testlauf_erzwingt_mock_modus` | ja |
 
-`git diff --name-only -- core/templates/` → **alle 17** Bestands-Templates geändert. Kein `{{ form.as_p }}` und keine Regel des alten Hand-CSS (`.kpi-card`, `.bar-track`, `.dashboard-table`) mehr vorhanden.
+**Warum der Test-Runner nötig ist — belegt, nicht angenommen:** Derselbe Schutztest mit Djangos Standard-Runner (`--testrunner django.test.runner.DiscoverRunner`) **schlägt fehl** (`AssertionError: False is not true`), weil die `.env` den echten Schlüssel in die Test-Settings bringt. Die bestehenden KI-Tests überschreiben den Schlüssel zwar einzeln, aber jeder künftige Test ohne diese Überschreibung hätte echte, kostenpflichtige Aufrufe ausgelöst. Tests, die den Nicht-Mock-Pfad prüfen, überschreiben den globalen Schutz weiterhin gezielt und patchen dabei das SDK.
 
-### Akzeptanzkriterien
+---
+
+## 2. Feature 8: Abdeckung der Akzeptanzkriterien
+
+### Modell
 
 | # | Kriterium | Nachweis | Erfüllt |
 |---|---|---|---|
-| 1 | Bootstrap 5.3.8 + Icons 1.13.1 per CDN | `base.html`; im Browser: `bootstrap.min.css` mit 1297 Regeln, Icons-CSS mit 2080 Regeln, `window.bootstrap` meldet 5.3.8 | ja |
-| 2 | SRI + `crossorigin` an allen drei Ressourcen | Hashes aus den ausgelieferten Dateien berechnet (`openssl dgst -sha384`); `test_bootstrap_css_und_js_mit_sri`; **Browser hat alle drei akzeptiert**, 0 Konsolenfehler | ja |
-| 3 | Script am Ende von `<body>` | `test_script_steht_am_ende_des_body` | ja |
-| 4 | Responsive Navbar mit Toggler | Handybreite: Toggler klappt auf, `aria-expanded` wechselt auf `true` | ja |
-| 5 | Aktiver Link mit `.active` **und** `aria-current` | `NavigationTests` (6 Fälle): Dashboard, Goal-Detail, Resource-Route, Session-Seiten, genau ein aktiver Link | ja |
-| 6 | User-Dropdown, Logout als POST | `test_logout_ist_post_formular_im_dropdown` (Form + CSRF-Token im Dropdown); im Browser aufgeklappt | ja |
-| 7 | Anonym: Login/Registrieren statt Dropdown | `test_anonym_sieht_login_und_registrieren` | ja |
-| 8 | `test_navbar_enthaelt_dashboard_link` grün | unverändert grün | ja |
-| 9 | Container, Alerts (`error` → `danger`) | `base.html`; Fehlermeldungen der KI-Views erscheinen weiterhin (`test_ai_views`) | ja |
-| 10–17 | Seiten-Layouts laut Ticket | Abschnitt "Abdeckung"; Screenshots aller Seitentypen begutachtet | ja |
-| 18 | Ein Formular-Partial, `forms.py` unangetastet | `git diff core/forms.py` leer; Login gestylt (`test_login_formular_gestylt`) | ja |
-| 19 | `is-invalid`, `aria-invalid`, `aria-describedby` | `test_fehler_markiert_feld`; siehe Abschnitt 3 zur Herkunft der ARIA-Attribute | ja |
-| 20 | Pflichtfelder markiert, Hinweis am Formular | `test_pflichtfeld_hinweis`; Login bewusst ohne (`test_login_ohne_pflichtfeld_hinweis`) | ja |
-| 21–26 | Barrierefreiheit | siehe Abschnitt 2 | ja |
-| 27 | 145 Bestandstests unverändert grün | `git diff --name-only -- core/tests/` → **leer**; 145/145 grün | ja |
-| 28 | URLs, Feldnamen, IDs, `badge-{typ}` erhalten | `id="status"`, `id_<feld>`, `badge-article/-video/-repo/-doc`; `test_resource_badge_class_matches_type` grün | ja |
-| 29 | KI-Begriffe nur mit Ergebnis | `test_ai_views` (prüft Abwesenheit) grün; die Wörter stehen ausschließlich in den `{% if %}`-Blöcken | ja |
-| 30 | Neue Tests für die Kernpunkte | `core/tests/test_ui.py`, 30 Tests | ja |
-| — | Sessions ohne N+1 | `prefetch_related("tags")`; `test_session_liste_zeigt_tags_ohne_n_plus_1` (Query-Zahl bei 3 und 6 Sessions identisch) | ja |
+| 1 | `AIFeedback` mit `goal` (FK, CASCADE), `feedback_type`, `content`, `created_at` | `core/models.py`; Felder exakt wie spezifiziert, `related_name="ai_feedbacks"` | ja |
+| 2 | Neueste zuerst, `-pk` als Tiebreaker | `test_sortierung_neueste_zuerst`, `test_gleicher_zeitstempel_nach_pk` | ja |
+| 3 | Schritte zeilenweise, `steps`-Property | `test_steps_aus_zeilen` (Leerzeilen und Ränder bereinigt), `test_next_steps_zeilenweise_gespeichert` (Rundreise Liste → DB → Liste) | ja |
+| 4 | Besitzer nur über `goal__user` | kein `user`-Feld; alle Abfragen gehen vom gescopten Goal oder von `goal__user` aus | ja |
+| 5 | Migration `0004_aifeedback` erzeugt und angewendet | `sqlmigrate`: ein `CREATE TABLE` + Index auf `goal_id`, keine bestehende Tabelle berührt; auf die Dev-DB angewendet | ja |
+| 6 | Admin-Registrierung | `AIFeedbackAdmin` mit Liste, Filter nach Typ, Suche | ja |
+
+### Speichern
+
+| # | Kriterium | Nachweis | Erfüllt |
+|---|---|---|---|
+| 7 | Genau ein Eintrag pro erfolgreicher Aktion, richtiger Typ | `test_summary_wird_gespeichert`, `test_next_steps_zeilenweise_gespeichert`, `test_results_are_persisted_per_type` | ja |
+| 8 | Historie statt Überschreiben | `test_jede_aktion_ein_neuer_eintrag` (2 Aufrufe → 2 Einträge) | ja |
+| 9 | Fehler → nichts gespeichert | `test_fehler_speichert_nichts` (beide Aktionen), `test_failed_action_leaves_no_result` | ja |
+| 10 | Echter Pfad speichert die Modellantwort | `test_echter_pfad_speichert_modellantwort`: Mock aus, `_call_openai` gepatcht, gespeichert wird die bereinigte Antwort | ja |
+| 11 | Session-Speicher vollständig entfernt | `AI_SUMMARY_KEY`/`AI_NEXT_STEPS_KEY` und alle `request.session`-Zugriffe der KI-Views entfernt; `grep` in Code und Tests ohne Treffer | ja |
+| 12 | `ai_service` bleibt datenbankfrei | Datei unverändert; `test_service_does_not_touch_database` grün; gespeichert wird in `GoalAIActionMixin.post` | ja |
+| 13 | Auch Mock-Ergebnisse werden gespeichert | Mock-Text trägt bereits "[Mock-Modus]" und ist in der Historie als solcher erkennbar | ja |
+
+### Anzeige
+
+| # | Kriterium | Nachweis | Erfüllt |
+|---|---|---|---|
+| 14 | KI-Card zeigt neuestes Ergebnis je Typ, mit Datum | `test_neuestes_ergebnis_in_ki_card` (ältere Einschätzung erscheint nicht in der Card); im Browser: nach Löschen des neuesten Eintrags fällt die Card korrekt auf den nächstälteren zurück | ja |
+| 15 | Timeline `#ki-verlauf`: Datum (`<time datetime>`), Typ-Badge, formatierter Text, neueste zuerst | `test_timeline_zeigt_alle_eintraege`; Screenshot begutachtet | ja |
+| 16 | Leerzustand | `test_leerzustand` (Hinweis da, "Alle zuruecksetzen" nicht) | ja |
+| 17 | Keine N+1-Abfragen | **eine** Abfrage für die gesamte Historie; das Neueste je Typ wird aus derselben Liste gewählt; `test_abfragen_unabhaengig_von_eintragszahl` (2 vs. 8 Einträge, gleiche Query-Zahl) | ja |
+| 18 | Keine Einträge fremder Goals | `test_eintraege_anderer_goals_unsichtbar` | ja |
+
+### Löschen
+
+| # | Kriterium | Nachweis | Erfüllt |
+|---|---|---|---|
+| 19 | Einzel-Löschen per POST, Redirect auf `#ki-verlauf`, Meldung | `test_einzelnen_eintrag_loeschen`; im Browser durchgeklickt | ja |
+| 20 | "Alle zurücksetzen": GET bestätigt, POST löscht nur dieses Goal | `test_alle_zuruecksetzen_bestaetigung` (GET löscht nichts), `test_alle_zuruecksetzen_betrifft_nur_dieses_goal` | ja |
+| 21 | Login-Pflicht, 404 für Fremdes **ohne** Löschung, GET → 405 | `ScopingTests` (4 Fälle inkl. Gegenprobe), `test_einzel_loeschen_nicht_per_get` | ja |
+| 22 | CASCADE beim Goal-Löschen, Hinweis in der Bestätigung | `test_cascade_beim_goal_loeschen`; Text nennt jetzt Lernsitzungen, Ressourcen und KI-Verlauf | ja |
 
 ---
 
-## 2. Barrierefreiheit
+## 3. Sicherheit
 
-### Im Browser verifiziert
+**Mandantentrennung — per Mutation geprüft:**
 
-| Prüfung | Ergebnis |
+| Mutation (danach zurückgesetzt) | Ergebnis |
 |---|---|
-| Skip-Link ist erstes Tab-Ziel | Tab → Fokus auf "Zum Inhalt springen", Element sichtbar |
-| Skip-Link verschiebt den **Fokus**, nicht nur die Scrollposition | Enter → `document.activeElement` ist `MAIN#main-content` (dank `tabindex="-1"`) |
-| Navbar-Toggler und Dropdown melden ihren Zustand | `aria-expanded` wechselt beim Öffnen auf `true` |
-| Kein horizontales Scrollen in Handybreite | `scrollWidth ≤ innerWidth` auf Profil, Dashboard, Goal-Liste, Goal-Detail, Sessions, Lösch-Bestätigung |
-| Clickjacking-Schutz intakt | Einbetten per `<iframe>` wird von `X-Frame-Options: DENY` blockiert |
+| `AIFeedback.objects.create(...)` entfernt | 8 Tests rot (Speichern, Anzeige, Scoping-Gegenprobe) |
+| Einzel-Löschen ohne `goal__user`-Filter | `test_fremder_eintrag_404_ohne_loeschung` rot |
+| "Zurücksetzen" löscht alle Einträge des Nutzers statt des Goals | `test_alle_zuruecksetzen_betrifft_nur_dieses_goal` rot |
 
-### Statisch und per Test geprüft
+Beide Lösch-Views folgen dem Projektmuster "gefiltert statt nachträglich geprüft": Ein fremder PK ist im Queryset nicht enthalten, die 404 fällt, bevor irgendetwas gelöscht wird.
 
-| Kriterium | Nachweis |
+**XSS durch KI-Ausgaben:** Modellantworten sind nicht vertrauenswürdige Eingaben — ein Prompt-Injection-Versuch in Notizen oder Ressourcen-Titeln könnte HTML in der Antwort provozieren. Ausgegeben wird ausschließlich über `|linebreaksbr` (escaped vor dem Umbruch) bzw. `{{ schritt }}` (Autoescape). Kein `|safe` im neuen Code.
+
+**CSRF / Methoden:** Beide Lösch-Aktionen sind POST mit `{% csrf_token %}`; GET auf die Einzel-Löschroute → 405, GET auf "Zurücksetzen" zeigt nur die Bestätigung.
+
+**Secrets:** `.env` bleibt durch `.gitignore` und `.dockerignore` außerhalb von Repository und Image. Der Testlauf ist vom echten Konto getrennt (Abschnitt 1).
+
+---
+
+## 4. Befund der Sichtprüfung: Erfolgsmeldung außerhalb des Sichtbereichs
+
+**Gefunden:** Nach dem Löschen leitet die View auf `#ki-verlauf` um, damit man an der Stelle bleibt, an der man gearbeitet hat. Die Erfolgsmeldung erschien aber im globalen Meldungsbereich oben auf der Seite — im Browser gemessen **671 px oberhalb des sichtbaren Bereichs**. Wer löscht, sah keine Bestätigung.
+
+**Behoben:** Meldungen der KI-Historie tragen `extra_tags="ki-verlauf"`. `base.html` überspringt sie, `_ai_timeline.html` zeigt sie direkt im Abschnitt an. Nachgemessen: Meldung sichtbar (509 px im Viewport), genau **eine** Meldung auf der Seite. Abgesichert durch `test_meldung_erscheint_im_verlauf_statt_oben` (genau ein Vorkommen, und zwar nach `id="ki-verlauf"`).
+
+---
+
+## 5. Barrierefreiheit
+
+- Timeline als `<ol>`: die Reihenfolge ist Teil der Information und wird Screenreadern als Liste mit Anzahl angesagt.
+- Zeitpunkte als `<time datetime="…">` in maschinenlesbarem ISO-Format.
+- Typ nie nur über Farbe: Badge mit Icon **und** Text; Timeline-Punkte sind reine Zierde.
+- Lösch-Buttons mit sprechendem `aria-label` ("KI-Eintrag (Zusammenfassung) vom 01.10.2026 13:06 loeschen") — in einer Liste gleicher Icons sonst nicht unterscheidbar.
+- Lösch-Button bewusst als `btn-sm btn-outline-danger` statt als nackter Icon-Link mit `p-0`: Letzterer hätte die Mindest-Zielgröße von 24×24 px (WCAG 2.5.8) unterschritten.
+- Abschnitt mit `aria-labelledby`; Erfolgsmeldung mit `role="status"`.
+
+---
+
+## 6. Anpassung bestehender Tests
+
+Ein Bestandsmodul wurde geändert: `core/tests/test_ai_views.py` (+23/−12). Grund ist die im Ticket festgehaltene **Vertragsumkehr** — Feature 4 hat per Test festgeschrieben, dass Ergebnisse nur in der Session und nie in der Datenbank liegen. Die Absicht jedes Tests bleibt erhalten, nur das Speichermedium wechselt:
+
+| Test | Änderung |
 |---|---|
-| Dekorative Icons `aria-hidden="true"` | `grep` über alle Templates: kein `<i class="bi …">` ohne; `test_dekorative_icons_sind_versteckt` auf vier Seiten |
-| Icon-only-Buttons mit zugänglichem Namen | Bearbeiten/Löschen in der Goal-Liste und Entfernen bei Ressourcen tragen `aria-label` mit dem Objektnamen ("Ressource Doku entfernen"), nicht nur "Entfernen"; `test_icon_buttons_haben_zugaenglichen_namen` |
-| "Details"-Links unterscheidbar | visuell versteckter Zusatz "zu <Titel>" — Screenreader-Linklisten zeigen nicht zehnmal "Details" |
-| Tabellen | `<caption>` + `<th scope="col">` in allen Tabellen; `test_tabellen_mit_caption_und_scope` |
-| Progress-Balken | `role="progressbar"`, sprechendes `aria-label` ("Python: 200 Minuten"), `aria-valuenow/-min/-max`; `test_dashboard_progressbar_aria` |
-| Neuer Tab angekündigt | visuell versteckt "(oeffnet in neuem Tab)"; alle `_blank`-Links mit `rel="noopener noreferrer"` |
-| Genau eine `<h1>` | `test_genau_eine_h1_je_seite` über 11 Seiten. `home.html` enthält zwei `<h1>`, die aber in exklusiven `{% if %}`/`{% else %}`-Zweigen stehen |
-| Status nie nur über Farbe | jedes Badge enthält Icon **und** Text; `test_status_badge_mit_text` |
-| Checkbox-Gruppen | `<fieldset>` + `<legend>` statt eines einzelnen `<label>`; `test_mehrfachauswahl_als_fieldset` |
-| Landmarks | `<header>`, `<nav aria-label="Hauptnavigation">`, `<main>`, `<footer>`; Breadcrumbs als eigene `<nav>` mit `aria-current="page"` |
-| Reduzierte Bewegung | Hover-Anhebung der Cards unter `prefers-reduced-motion: reduce` abgeschaltet |
-| Kontrast | Bootstrap-`text-bg-*` erfüllt AA; die vier Ressourcen-Badge-Farben erreichen mit weißer Schrift je ≥ 4,5:1 |
+| `test_actions_not_triggered_by_get` | Session-Schlüssel → `AIFeedback.objects.count() == 0` |
+| `test_results_are_not_persisted_in_database` | ersetzt durch `test_results_are_persisted_per_type` (Gegenteil, wie vom Ticket gefordert) |
+| `test_failed_action_leaves_no_result_in_session` | → `test_failed_action_leaves_no_result`, prüft die DB |
+| `test_own_goal_actions_work` | Session-Schlüssel → je ein Eintrag pro Typ |
+| `test_next_steps_action_redirects_and_shows_list` | `context["ai_next_steps"]` → `.steps` |
 
-**Eine Anmerkung ohne Nachbesserungsbedarf:** Der gelbe Wochen-Balken (`bg-warning`) erreicht gegen seine graue Spur nicht das 3:1-Kontrastziel für Grafiken (WCAG 1.4.11). Er ist aber rein ergänzend — derselbe Wert steht als Zahl in der Nachbarspalte und als `aria-label` am Balken. Es geht keine Information verloren.
+Kein Test wurde abgeschwächt; alle übrigen Bestandsmodule sind unverändert.
 
 ---
 
-## 3. Befund im Zuge der Umsetzung: ARIA kommt von Django selbst
-
-Der Plan sah vor, dass der Filter `bs_widget` `aria-describedby` selbst zusammensetzt — mit der Begründung, Django verknüpfe sonst nur den Hilfetext. Eine **Mutationsprobe** hat diese Annahme widerlegt: Nach Entfernen der eigenen Fehler-Verknüpfung blieb `test_fehler_markiert_feld` grün.
-
-Ursache (`django/forms/boundfield.py`): Seit **Django 5.2** erzeugt `BoundField.aria_describedby` selbst `aria-invalid` und `aria-describedby` nach der Konvention `<id>_helptext` / `<id>_error`. Die Annahme galt nur für 5.0/5.1.
-
-Konsequenz:
-
-- Der eigene ARIA-Code wurde **entfernt**; `bs_widget` vergibt nur noch die CSS-Klasse. Das Partial stellt sicher, dass Hilfe- und Fehlertext genau die IDs tragen, auf die Django verweist.
-- Weil das Verhalten erst ab 5.2 existiert, wurde der Pin in `requirements.txt` von `Django>=5.0` auf **`Django>=5.2`** angehoben. Installiert ist bereits 5.2.17 (LTS), das Docker-Image zieht ebenfalls 5.2.x — es ändert sich nichts an der laufenden Umgebung, nur die Untergrenze ist jetzt ehrlich.
-- Gegenprobe an der Stelle, die tatsächlich von uns abhängt: Die Fehler-ID im Partial testweise umbenannt → `test_fehler_markiert_feld` **rot**. Der Test prüft also den Vertrag zwischen Partial und Django.
-
----
-
-## 4. Befund der Sichtprüfung: Scrollleiste in Tabellen
-
-**Gefunden:** In der Sessions-Tabelle erschien innerhalb der Card eine vertikale Scrollleiste.
-
-**Ursache (im Browser gemessen):** `scrollHeight` 247 gegenüber `clientHeight` 246 — überlaufendes Element war die visuell versteckte `<caption>`. Bootstrap 5.3 nimmt Captions bewusst von `position: absolute` aus (`.visually-hidden:not(caption)`), weil absolut positionierte Captions das Tabellenlayout stören. Die Caption bleibt also 1 px hoch im Fluss. Da `.table-responsive` `overflow-x: auto` setzt, wird nach CSS-Spezifikation auch die y-Achse scrollbar.
-
-**Behoben:** `.table-responsive { overflow-y: hidden; }` in `base.html`, mit Begründung im Kommentar. Der Wrapper soll ohnehin nur horizontal scrollen. Nachgemessen: `overflowY: hidden`, keine Scrollleiste, Caption-Text weiterhin im Accessibility-Baum.
-
-Ein reiner HTML-Test hätte diesen Fehler nicht finden können — er existiert erst im Zusammenspiel von Bootstrap-CSS und Browser-Layout.
-
----
-
-## 5. Sicherheit
-
-- **SRI:** Alle drei CDN-Ressourcen mit SHA-384, berechnet aus den tatsächlich ausgelieferten Dateien — nicht aus Dokumentation oder Gedächtnis übernommen. Ein manipuliertes CDN-Asset würde der Browser verwerfen.
-- **XSS:** Die einzige `|safe`-Stelle ist `{{ field.help_text|safe }}` in `_form.html`. Hilfetexte stammen aus Modell- und Formulardefinitionen (inkl. Djangos HTML-Liste der Passwortregeln), nie aus Nutzereingaben — identisch mit Djangos eigenem Standard-Template. Beschreibungen und Notizen werden neu per `|linebreaksbr` ausgegeben; der Filter escaped vor dem Umbruch.
-- **CSRF:** Alle POST-Formulare (Logout im Dropdown, KI-Aktionen, Ressource entfernen, Lösch-Bestätigungen) tragen weiterhin `{% csrf_token %}`. Löschen bleibt ausschließlich POST.
-- **Tabnabbing:** alle `target="_blank"`-Links mit `rel="noopener noreferrer"`.
-- **Clickjacking:** `X-Frame-Options: DENY` unverändert wirksam (im Browser bestätigt).
-
----
-
-## 6. Abweichungen gegenüber Ticket und Plan
+## 7. Abweichungen gegenüber dem Plan
 
 | Abweichung | Bewertung |
 |---|---|
-| Django-Pin `>=5.2` statt `>=5.0` | Siehe Abschnitt 3. Macht eine tatsächliche Abhängigkeit sichtbar; die laufende Umgebung bleibt unverändert. |
-| Checkbox-Gruppen werden im Partial selbst gerendert (Bootstrap-`btn-check`-Chips) statt über `bs_widget` | Notwendig: Djangos Gruppen-Template schreibt die übergebene `class` auch auf den äußeren Container-`<div>` — `form-check-input` hätte ihn als 1em-Checkbox gerendert. Namen, Werte und IDs (`id_tags_0` …) entsprechen exakt dem Django-Widget; `test_chip_auswahl_laesst_sich_absenden` und `test_gesetzter_tag_ist_vorausgewaehlt` belegen, dass das Formular die Auswahl unverändert annimmt. |
-| `.table-responsive { overflow-y: hidden; }` | Fix aus der Sichtprüfung, Abschnitt 4. |
-| Zusätzliches Partial `_home_card.html` | im Plan nachgetragen. |
-| "Abbrechen" in Goal- und Session-Formularen führt beim **Bearbeiten** zur Detailseite statt zur Liste | Bewusste UX-Verbesserung: man landet dort, woher man kam. Beim Anlegen bleibt das Ziel die Liste. Reine Link-Ziele, kein View-Verhalten; streng gelesen eine kleine Abweichung von "Verhalten unverändert" und deshalb hier festgehalten. |
-| Breadcrumbs auf Goal- und Session-Detail, "Erfassen"-Button in der Sessions-Card des Goals | additive Navigationshilfen auf bestehende URLs |
-| Ein zunächst gesetztes `novalidate` an Login/Registrierung wurde wieder entfernt | hätte die native Browser-Validierung abgeschaltet und damit Verhalten geändert |
+| `extra_tags="ki-verlauf"` und Meldungsanzeige im Abschnitt | Fix aus der Sichtprüfung, Abschnitt 4. |
+| Lösch-Button als Outline-Button statt Icon-Link | Zielgröße, Abschnitt 5. |
+| 23 statt 22 neue Tests | zusätzlich `test_gleicher_zeitstempel_nach_pk`, `test_eigene_loeschung_funktioniert` (Gegenprobe) und `test_meldung_erscheint_im_verlauf_statt_oben`. |
+| Link "Zum KI-Verlauf (n)" im Fuß der KI-Card | Die Timeline steht am Ende der Hauptspalte; der Link verbindet die Card mit dem Verlauf. Additiv. |
 
 ---
 
-## 7. Verifikation
+## 8. Hinweis für den Betrieb
+
+`python-dotenv` ist eine neue Laufzeit-Abhängigkeit und wird von `settings.py` importiert. Ein vorhandenes, älteres Docker-Image muss daher **neu gebaut** werden (`docker compose build`), sonst startet es mit `ModuleNotFoundError`. Die CI baut das Image bei jedem Lauf neu und deckt das ab.
+
+---
+
+## 9. Verifikation
 
 ```powershell
 ruff check .                                        # All checks passed!
-python manage.py check                              # 0 Issues
 python manage.py makemigrations --check --dry-run   # No changes detected
-python manage.py test                               # Ran 175 tests — OK
+python manage.py test                               # Ran 199 tests — OK
 .\.workflow\hooks\validate_code.ps1                 # Exit-Code 0
-git diff --name-only -- core/tests/                 # leer: kein Bestandstest angepasst
 ```
 
-**Mutationsproben** (jeweils danach zurückgesetzt):
-
-| Mutation | Ergebnis |
-|---|---|
-| `prefetch_related("tags")` entfernt | `test_session_liste_zeigt_tags_ohne_n_plus_1` rot |
-| Eigene Fehler-Verknüpfung im Filter entfernt | **grün** → führte zum Befund in Abschnitt 3 |
-| Fehler-ID im Partial umbenannt | `test_fehler_markiert_feld` rot |
-
-**Sichtprüfung:** Login (leer und mit Fehler), Dashboard, Goal-Liste, Goal-Detail mit KI-Ergebnis, Sessions-Liste, Session-Formular mit Chips, Profil mit aufgeklapptem Mobil-Menü und Dropdown, Lösch-Bestätigung mobil. Dazu ein temporärer Prüfnutzer mit Beispieldaten, der anschließend samt Daten wieder gelöscht wurde; die Dev-Datenbank ist im Ausgangszustand.
+**Sichtprüfung** mit temporärem Prüfnutzer und direkt angelegten Einträgen (keine API-Aufrufe): Timeline mit vier Einträgen, Einzel-Löschen mit Rückfall der KI-Card, Bestätigungsseite, "Alle zurücksetzen", Leerzustand; 0 Konsolenfehler. Prüfnutzer samt Daten anschließend gelöscht — in der Dev-Datenbank sind nur dein Konto, 0 KI-Einträge und 0 Tags.
 
 ---
 
-## 8. Fazit
+## 10. Fazit
 
-Alle Seiten sind auf ein einheitliches, responsives Bootstrap-5-Design umgestellt, ohne dass ein einziger Bestandstest angepasst werden musste. Die Barrierefreiheit wurde nicht nur am Markup, sondern im Browser geprüft (Fokusführung, Zustandsattribute, Überlauf in Handybreite). Zwei echte Befunde — eine falsche Annahme über Djangos ARIA-Verhalten und ein Layoutfehler durch versteckte Tabellen-Captions — wurden gefunden, ursächlich erklärt und behoben.
+KI-Ergebnisse überleben jetzt Logout und Browserwechsel, bilden eine nachvollziehbare Historie und lassen sich einzeln oder gesamt löschen — streng auf den Besitzer begrenzt, wie die Mutationsproben belegen. Die `.env`-Unterstützung macht den lokalen Start bequem, ohne die Testsuite an das echte, kostenpflichtige Konto zu koppeln. Ein Bedienfehler (unsichtbare Erfolgsmeldung) wurde in der Sichtprüfung gefunden und behoben.
 
 **Freigabe erteilt: APPROVED.**

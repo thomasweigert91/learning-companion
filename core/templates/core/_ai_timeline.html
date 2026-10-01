@@ -1,0 +1,47 @@
+{# Erwartet "feedbacks" (AIFeedback, neueste zuerst). Geordnete Liste: die Reihenfolge ist Teil der Information. #}
+{% for message in messages %}
+    {% if "ki-verlauf" in message.extra_tags %}
+        <div class="alert alert-success alert-dismissible fade show py-2" role="status">
+            <i class="bi bi-check-circle me-1" aria-hidden="true"></i>{{ message }}
+            <button type="button" class="btn-close py-2" data-bs-dismiss="alert" aria-label="Meldung schliessen"></button>
+        </div>
+    {% endif %}
+{% endfor %}
+{% if feedbacks %}
+    <ol class="lc-timeline list-unstyled mb-0">
+        {% for feedback in feedbacks %}
+            <li class="lc-timeline-item lc-timeline-{{ feedback.feedback_type }}">
+                <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                    {% if feedback.feedback_type == "summary" %}
+                        <span class="badge text-bg-info"><i class="bi bi-card-text me-1" aria-hidden="true"></i>{{ feedback.get_feedback_type_display }}</span>
+                    {% else %}
+                        <span class="badge text-bg-warning"><i class="bi bi-signpost-2 me-1" aria-hidden="true"></i>{{ feedback.get_feedback_type_display }}</span>
+                    {% endif %}
+                    <time class="small text-body-secondary me-auto" datetime="{{ feedback.created_at|date:'c' }}">{{ feedback.created_at|date:"d.m.Y H:i" }}</time>
+                    <form action="{% url 'core:ai_feedback_delete' feedback.pk %}" method="post">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-sm btn-outline-danger"
+                                aria-label="KI-Eintrag ({{ feedback.get_feedback_type_display }}) vom {{ feedback.created_at|date:'d.m.Y H:i' }} loeschen"
+                                title="Eintrag loeschen">
+                            <i class="bi bi-trash3" aria-hidden="true"></i>
+                        </button>
+                    </form>
+                </div>
+                {% if feedback.feedback_type == "next_steps" %}
+                    <ol class="small ps-3 mb-0">
+                        {% for schritt in feedback.steps %}
+                            <li class="mb-1">{{ schritt }}</li>
+                        {% endfor %}
+                    </ol>
+                {% else %}
+                    <p class="small mb-0">{{ feedback.content|linebreaksbr }}</p>
+                {% endif %}
+            </li>
+        {% endfor %}
+    </ol>
+{% else %}
+    <p class="text-body-secondary mb-0">
+        Noch keine KI-Ergebnisse gespeichert. Jede Zusammenfassung und jeder
+        Vorschlag aus der KI-Unterstuetzung landet automatisch hier.
+    </p>
+{% endif %}

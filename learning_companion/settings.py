@@ -3,7 +3,15 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Lokale .env in die Umgebung laden, bevor irgendeine Einstellung gelesen wird.
+# override=False (Default): bereits gesetzte Variablen gewinnen -- im Container
+# und in der CI kommen die Werte aus der echten Umgebung, eine .env gibt es
+# dort nicht. Fehlt die Datei, passiert schlicht nichts.
+load_dotenv(BASE_DIR / ".env")
 
 
 # --- Sicherheit -------------------------------------------------------------
@@ -126,6 +134,10 @@ STORAGES = {
 }
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# Testlaeufe erzwingen den KI-Mock -- auch wenn die .env einen echten Schluessel
+# enthaelt. Siehe core/test_runner.py.
+TEST_RUNNER = "core.test_runner.OfflineTestRunner"
 
 
 # --- OpenAI -----------------------------------------------------------------

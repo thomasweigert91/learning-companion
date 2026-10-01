@@ -57,4 +57,15 @@ urlpatterns = [
         views.GoalNextStepsView.as_view(),
         name="goal_ai_next_steps",
     ),
+    # KI-Historie (pk adressiert beim Zuruecksetzen das Goal, beim Loeschen den Eintrag)
+    path(
+        "goals/<int:pk>/ai/history/clear/",
+        views.AIFeedbackClearView.as_view(),
+        name="goal_ai_history_clear",
+    ),
+    path(
+        "ai-feedback/<int:pk>/delete/",
+        views.AIFeedbackDeleteView.as_view(),
+        name="ai_feedback_delete",
+    ),
 ]

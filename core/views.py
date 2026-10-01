@@ -3,7 +3,7 @@ from django.contrib.auth import login
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db.models import Count, Sum
 from django.db.models.functions import TruncWeek
-from django.shortcuts import get_object_or_404, redirect
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse_lazy
 from django.views import View
 from django.views.generic import (
@@ -22,12 +22,8 @@ from core.forms import (
     RegistrationForm,
     ResourceForm,
 )
-from core.models import Goal, LearningSession, Profile, Resource
+from core.models import AIFeedback, Goal, LearningSession, Profile, Resource
 from core.services import ai_service
-
-# Session-Schluessel fuer die fluechtigen KI-Ergebnisse.
-AI_SUMMARY_KEY = "ai_summary"
-AI_NEXT_STEPS_KEY = "ai_next_steps"
 
 
 class HomeView(TemplateView):
@@ -136,15 +132,22 @@ class GoalDetailView(OwnGoalMixin, DetailView):
         context = super().get_context_data(**kwargs)
         context["resource_form"] = self.resource_form or ResourceForm()
 
-        # KI-Ergebnisse nur zeigen, wenn sie zu genau diesem Goal gehoeren --
-        # sonst erschiene die Zusammenfassung von Goal A auch unter Goal B.
-        gespeichert = self.request.session.get(AI_SUMMARY_KEY)
-        if gespeichert and gespeichert.get("goal_id") == self.object.pk:
-            context["ai_summary"] = gespeichert.get("text")
+        # Die komplette KI-Historie in einer Abfrage. Ausgangspunkt ist das
+        # bereits auf request.user gescopte Goal -- Eintraege anderer Goals
+        # koennen hier strukturell nicht auftauchen.
+        feedbacks = list(self.object.ai_feedbacks.all())
+        context["ai_feedbacks"] = feedbacks
 
-        gespeichert = self.request.session.get(AI_NEXT_STEPS_KEY)
-        if gespeichert and gespeichert.get("goal_id") == self.object.pk:
-            context["ai_next_steps"] = gespeichert.get("steps")
+        # Neuestes Ergebnis je Typ fuer die KI-Card: aus der schon geladenen,
+        # absteigend sortierten Liste statt mit zwei weiteren Abfragen. Gesetzt
+        # wird nur, was existiert -- die Card blendet leere Bloecke aus.
+        for schluessel, typ in (
+            ("ai_summary", AIFeedback.FeedbackType.SUMMARY),
+            ("ai_next_steps", AIFeedback.FeedbackType.NEXT_STEPS),
+        ):
+            neuester = next((f for f in feedbacks if f.feedback_type == typ), None)
+            if neuester:
+                context[schluessel] = neuester
 
         return context
 
@@ -289,14 +292,17 @@ class GoalAIActionMixin(LoginRequiredMixin):
     """Gemeinsamer Ablauf beider KI-Aktionen.
 
     Nur POST: ein GET laeuft in 405 und loest damit keine Aktion aus.
+
+    Gespeichert wird hier und nicht im Service: ai_service bleibt bewusst
+    datenbankfrei und liefert nur Text bzw. eine Liste.
     """
 
-    session_key = None
+    feedback_type = None
 
     def run_service(self, goal):
         raise NotImplementedError
 
-    def build_result(self, ergebnis, goal):
+    def to_content(self, ergebnis):
         raise NotImplementedError
 
     def post(self, request, pk):
@@ -306,31 +312,95 @@ class GoalAIActionMixin(LoginRequiredMixin):
         try:
             ergebnis = self.run_service(goal)
         except ai_service.AIServiceError as fehler:
+            # Im Fehlerfall wird nichts gespeichert -- die Historie enthaelt
+            # ausschliesslich tatsaechlich erzeugte Ergebnisse.
             messages.error(request, str(fehler))
         else:
-            request.session[self.session_key] = self.build_result(ergebnis, goal)
+            AIFeedback.objects.create(
+                goal=goal,
+                feedback_type=self.feedback_type,
+                content=self.to_content(ergebnis),
+            )
 
         return redirect(goal.get_absolute_url())
 
 
 class GoalSummaryView(GoalAIActionMixin, View):
-    session_key = AI_SUMMARY_KEY
+    feedback_type = AIFeedback.FeedbackType.SUMMARY
 
     def run_service(self, goal):
         return ai_service.generate_summary(goal)
 
-    def build_result(self, ergebnis, goal):
-        return {"goal_id": goal.pk, "text": ergebnis}
+    def to_content(self, ergebnis):
+        return ergebnis
 
 
 class GoalNextStepsView(GoalAIActionMixin, View):
-    session_key = AI_NEXT_STEPS_KEY
+    feedback_type = AIFeedback.FeedbackType.NEXT_STEPS
 
     def run_service(self, goal):
         return ai_service.suggest_next_steps(goal)
 
-    def build_result(self, ergebnis, goal):
-        return {"goal_id": goal.pk, "steps": ergebnis}
+    def to_content(self, ergebnis):
+        # Eine Zeile pro Schritt; AIFeedback.steps macht daraus wieder eine
+        # Liste. Der Service zerlegt die Antwort bereits zeilenweise, ein
+        # Schritt enthaelt also nie selbst einen Zeilenumbruch.
+        return "\n".join(ergebnis)
+
+
+# Meldungen mit diesem Tag zeigt der Abschnitt #ki-verlauf selbst an statt
+# base.html: nach dem Redirect auf den Anker laege die Meldung oben auf der
+# Seite sonst ausserhalb des sichtbaren Bereichs.
+KI_VERLAUF_TAG = "ki-verlauf"
+
+
+class AIFeedbackDeleteView(LoginRequiredMixin, View):
+    """Loescht einen einzelnen KI-Eintrag. Nur POST (GET -> 405).
+
+    Gefiltert statt nachtraeglich geprueft: ein fremder Eintrag ist im
+    Queryset gar nicht enthalten, daraus folgt 404 vor jeder Loeschung.
+    """
+
+    def post(self, request, pk):
+        feedback = get_object_or_404(
+            AIFeedback.objects.filter(goal__user=request.user).select_related("goal"),
+            pk=pk,
+        )
+        goal = feedback.goal
+        feedback.delete()
+        messages.success(
+            request, "Der KI-Eintrag wurde geloescht.", extra_tags=KI_VERLAUF_TAG
+        )
+        return redirect(f"{goal.get_absolute_url()}#ki-verlauf")
+
+
+class AIFeedbackClearView(LoginRequiredMixin, View):
+    """Setzt die KI-Historie eines Goals zurueck: GET bestaetigt, POST loescht."""
+
+    template_name = "core/aifeedback_confirm_clear.html"
+
+    def get_goal(self):
+        return get_object_or_404(
+            Goal.objects.filter(user=self.request.user), pk=self.kwargs["pk"]
+        )
+
+    def get(self, request, pk):
+        goal = self.get_goal()
+        return render(
+            request,
+            self.template_name,
+            {"goal": goal, "anzahl": goal.ai_feedbacks.count()},
+        )
+
+    def post(self, request, pk):
+        goal = self.get_goal()
+        anzahl, _ = goal.ai_feedbacks.all().delete()
+        messages.success(
+            request,
+            f"Der KI-Verlauf wurde zurueckgesetzt ({anzahl} Eintraege geloescht).",
+            extra_tags=KI_VERLAUF_TAG,
+        )
+        return redirect(f"{goal.get_absolute_url()}#ki-verlauf")
 
 
 # --- Dashboard --------------------------------------------------------------

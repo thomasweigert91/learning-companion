@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from core.models import Goal, LearningSession, Profile, Resource, Tag
+from core.models import AIFeedback, Goal, LearningSession, Profile, Resource, Tag
 
 
 @admin.register(Tag)
@@ -36,3 +36,10 @@ class ResourceAdmin(admin.ModelAdmin):
     list_display = ("title", "goal", "type", "created_at")
     list_filter = ("type",)
     search_fields = ("title", "url", "goal__title")
+
+
+@admin.register(AIFeedback)
+class AIFeedbackAdmin(admin.ModelAdmin):
+    list_display = ("goal", "feedback_type", "created_at")
+    list_filter = ("feedback_type",)
+    search_fields = ("goal__title", "content")
