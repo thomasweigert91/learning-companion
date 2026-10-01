@@ -9,6 +9,15 @@ urlpatterns = [
     path("", views.HomeView.as_view(), name="home"),
     # Auswertung
     path("dashboard/", views.DashboardView.as_view(), name="dashboard"),
+    # Export (ohne PK: exportiert wird immer request.user)
+    path("export/", views.ExportCenterView.as_view(), name="export_center"),
+    path(
+        "export/sessions.csv",
+        views.ExportSessionsCSVView.as_view(),
+        name="export_sessions_csv",
+    ),
+    path("export/goals.zip", views.ExportGoalsZipView.as_view(), name="export_goals_zip"),
+    path("export/data.json", views.ExportJSONView.as_view(), name="export_json"),
     # Authentifizierung
     path("accounts/register/", views.RegisterView.as_view(), name="register"),
     path(

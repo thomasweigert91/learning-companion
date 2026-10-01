@@ -28,6 +28,7 @@ NAV_SECTIONS = (
     ("resource", "goals"),
     ("session", "sessions"),
     ("profile", "profile"),
+    ("export", "export"),
 )
 
 

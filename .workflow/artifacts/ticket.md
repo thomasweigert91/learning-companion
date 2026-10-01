@@ -1,140 +1,131 @@
-# Ticket: KI-Lernkarten-Generator mit interaktiver Abfrage
+# Ticket: Export & Backup Center (CSV, Markdown-ZIP, JSON)
 
 ## 1. Problem / Ziel
 
-Die KI-Unterstuetzung beschreibt bisher nur den Lernstand (Zusammenfassung) und
-schlaegt naechste Schritte vor. Sie hilft aber nicht beim eigentlichen
-**Festigen** des Gelernten. Wer ein Thema wiederholen will, muss sich Fragen
-selbst ausdenken.
+Alle Lerndaten liegen bisher ausschliesslich in der Anwendung. Wer seine
+Sitzungen in einer Tabellenkalkulation auswerten, seine Lernziele als Notizen in
+ein Wiki oder Obsidian uebernehmen oder schlicht ein Backup ziehen will, hat
+keinen Weg, die Daten herauszubekommen. Zusaetzlich verlangt Art. 20 DSGVO
+(Recht auf Datenuebertragbarkeit), dass Nutzer ihre Daten in einem strukturierten,
+gaengigen und maschinenlesbaren Format erhalten koennen.
 
-Dieses Ticket ergaenzt einen Lernkarten-Generator: Aus den Notizen der
-Lernsitzungen und den Ressourcen eines Goals erzeugt die KI 3 bis 5
-Frage-Antwort-Paare. Sie werden als Lernkarten gespeichert und auf der
-Goal-Detailseite als Abfrage-Ansicht angezeigt: Die Frage ist sichtbar, die
-Antwort wird erst auf Klick aufgedeckt. Gelernte Karten lassen sich markieren,
-ueberfluessige loeschen.
+Dieses Ticket ergaenzt ein **Export Center** unter `/export/` mit drei
+Download-Optionen:
 
-Anders als Zusammenfassung und naechste Schritte liefert diese Aktion
-**strukturierte Daten** statt Fliesstext. Deshalb nutzt der Service die
-Structured Outputs der OpenAI-API mit einem JSON-Schema. Eine kaputte oder
-unvollstaendige Antwort muss sauber abgefangen werden, statt halbe Karten zu
-speichern oder einen 500er auszuloesen.
+1. **CSV** aller Lernsitzungen -- fuer Excel, LibreOffice, Pandas.
+2. **ZIP mit einer Markdown-Datei je Goal** -- lesbar, versionierbar, mit
+   Metadaten-Frontmatter, Ressourcen und Sitzungshistorie.
+3. **JSON-Dump** aller eigenen Daten -- vollstaendig und verlustfrei, zur
+   Datenportabilitaet.
+
+Wie ueberall in der Anwendung gilt: Ein Export enthaelt ausschliesslich Daten des
+angemeldeten Nutzers.
 
 ## 2. Akzeptanzkriterien
 
-### Modell
+### Seite & Navigation
 
-- [ ] Neues Modell `Flashcard` mit `goal` (ForeignKey auf `Goal`,
-      `on_delete=CASCADE`, `related_name="flashcards"`), `question`
-      (TextField), `answer` (TextField), `is_mastered` (BooleanField,
-      `default=False`) und `created_at` (`auto_now_add=True`).
-- [ ] Sortierung fuer die Abfrage: noch nicht gelernte Karten zuerst, darin die
-      neuesten zuerst (`is_mastered`, `-created_at`, `-pk`).
-- [ ] Der Besitzer wird wie bei allen Kind-Modellen nur ueber `goal__user`
-      aufgeloest, nicht redundant gespeichert.
-- [ ] Migration `0005_flashcard` erzeugt und angewendet; rein additiv.
-- [ ] Im Django-Admin registriert.
+- [ ] Neue Seite `/export/` (URL-Name `core:export_center`), nur fuer angemeldete
+      Nutzer; anonym -> Redirect auf den Login mit `next`.
+- [ ] Neuer Menuepunkt "Export" (Icon `download`) in der Hauptnavigation, der auf
+      allen Export-Routen als aktiv markiert ist; weiterhin genau ein aktiver
+      Nav-Link je Seite.
+- [ ] Die Seite zeigt je Option eine Card mit Beschreibung, Umfang (Anzahl
+      Sitzungen bzw. Goals) und einem Download-Button; genau eine `<h1>`,
+      dekorative Icons mit `aria-hidden="true"`.
 
-### Service (`core/services/ai_service.py`)
+### Export 1: Lernsitzungen als CSV
 
-- [ ] Neue oeffentliche Funktion `generate_flashcards(goal)`; sie liefert eine
-      Liste von `{"question": ..., "answer": ...}` und schreibt wie die
-      bestehenden Funktionen **nichts** in die Datenbank.
-- [ ] Der Prompt basiert auf demselben, auf das Goal begrenzten Kontext wie die
-      anderen KI-Aktionen (Sitzungen mit Notizen, Ressourcen). Bereits
-      vorhandene Fragen des Goals werden mitgegeben (gedeckelt), damit die KI
-      keine Duplikate erzeugt.
-- [ ] Der Aufruf nutzt das konfigurierte Modell (Standard `gpt-4o-mini`) mit
-      `response_format` vom Typ `json_schema` und `strict: true`. Das Schema
-      erzwingt ein Objekt mit einer Liste `cards`, deren Eintraege genau
-      `question` und `answer` als Strings enthalten
-      (`additionalProperties: false`).
-- [ ] Die Anzahl 3 bis 5 wird **im Code** durchgesetzt, nicht dem Modell
-      ueberlassen: mehr als 5 werden gekuerzt, weniger als 3 verwertbare
-      Karten fuehren zu einem Fehler.
-- [ ] Fehlerbehandlung -- jeder dieser Faelle endet in einer verstaendlichen
-      `AIServiceError` und wird protokolliert, nie in einem 500er:
-      kein gueltiges JSON, falsche Struktur (kein Objekt, keine Liste `cards`),
-      Eintraege ohne oder mit leerem Text (werden verworfen), zu wenige
-      verwertbare Karten, eine Ablehnung durch das Modell (`refusal`).
-- [ ] Doppelte Fragen innerhalb einer Antwort und gegenueber vorhandenen Karten
-      (Vergleich ohne Gross-/Kleinschreibung und Randleerzeichen) werden
-      verworfen.
-- [ ] Der Mock-Modus liefert deterministisch 3 Karten aus den echten Goal-Daten.
+- [ ] Route `/export/sessions.csv` (`core:export_sessions_csv`), nur GET,
+      LoginRequired.
+- [ ] Antwort ist eine `StreamingHttpResponse` mit
+      `Content-Type: text/csv; charset=utf-8` und
+      `Content-Disposition: attachment; filename="learning-companion-sessions-<JJJJ-MM-TT>.csv"`.
+- [ ] Erste Zeile ist exakt der Header `Goal,Date,Duration (min),Tags,Notes`.
+- [ ] Je `LearningSession` des Nutzers genau eine Zeile, chronologisch
+      aufsteigend (`date`, dann `pk`); Datum im ISO-Format `JJJJ-MM-TT`,
+      Dauer als ganze Minuten, Tags alphabetisch mit `; ` getrennt, Notizen
+      unveraendert inkl. Zeilenumbruechen (korrektes CSV-Quoting).
+- [ ] Die Datei beginnt mit einem UTF-8-BOM, damit Excel Umlaute korrekt
+      anzeigt; ein Parser mit `utf-8-sig` liest Header und Daten unveraendert.
+- [ ] Schutz gegen CSV-/Formel-Injection: Textzellen, die mit `=`, `+`, `-`,
+      `@`, Tab oder Wagenruecklauf beginnen, erhalten ein fuehrendes `'`.
+- [ ] Ohne Sitzungen wird eine gueltige CSV mit nur dem Header geliefert.
+- [ ] Die Anzahl der DB-Abfragen ist unabhaengig von der Zahl der Sitzungen
+      (kein N+1 fuer Goal oder Tags).
 
-### Aktion und Verwaltung
+### Export 2: Goals als Markdown-ZIP
 
-- [ ] Button "Lernkarten generieren" in der KI-Card der Goal-Detailseite;
-      die Aktion ist nur per POST ausloesbar (GET -> 405).
-- [ ] Bei Erfolg werden die Karten gespeichert und angehaengt (bestehende
-      Karten und ihr Lernstatus bleiben erhalten); Redirect auf `#lernkarten`
-      mit Erfolgsmeldung, die im Abschnitt selbst erscheint.
-- [ ] Bei einem Fehler wird nichts gespeichert; die Fehlermeldung erscheint
-      ebenfalls im Abschnitt.
-- [ ] Der Button erhaelt denselben Ladezustand wie die beiden bestehenden
-      KI-Buttons (Spinner, alle KI-Buttons gesperrt), Ladetext
-      "Erstelle Lernkarten...".
-- [ ] Je Karte: "Als gelernt markieren" bzw. "Wieder lernen" (Umschalten von
-      `is_mastered`) und "Loeschen" -- beide nur per POST.
+- [ ] Route `/export/goals.zip` (`core:export_goals_zip`), nur GET,
+      LoginRequired.
+- [ ] Antwort ist eine `FileResponse` mit `Content-Type: application/zip` und
+      `Content-Disposition: attachment; filename="learning-companion-goals-<JJJJ-MM-TT>.zip"`.
+- [ ] Das Archiv ist ein gueltiges ZIP und enthaelt genau eine Datei je eigenem
+      Goal: `goals/<pk>-<slug>.md` (Slug aus dem Titel; leerer Slug -> `goal`).
+      Zwei Goals mit gleichem Titel erzeugen zwei verschiedene Dateien.
+- [ ] Jede Datei beginnt mit YAML-Frontmatter (`---` ... `---`) mit `id`,
+      `title`, `status`, `created`, `updated`, `sessions` (Anzahl),
+      `total_minutes`; Textwerte sind gequotet, sodass Doppelpunkte, Anfuehrungs-
+      zeichen und `#` im Titel die Frontmatter nicht brechen.
+- [ ] Danach folgen `# <Titel>`, die Beschreibung, ein Abschnitt
+      `## Ressourcen` (je Ressource `- [Titel](URL) -- Typ`) und ein Abschnitt
+      `## Lernsitzungen` (je Sitzung chronologisch: Datum, Dauer, Tags, Notizen).
+      Leere Abschnitte zeigen einen kurzen Hinweis statt zu fehlen.
+- [ ] Ohne Goals wird ein gueltiges, leeres ZIP geliefert.
 
-### Abfrage-Ansicht
+### Export 3: JSON-Dump (DSGVO-Datenportabilitaet)
 
-- [ ] Abschnitt "Lernkarten" (`id="lernkarten"`) als Bootstrap-Akkordeon: Die
-      Frage ist die Kopfzeile, die Antwort wird erst beim Aufklappen sichtbar.
-- [ ] Gelernte Karten tragen ein Badge "Gelernt" (Text, nicht nur Farbe).
-- [ ] Fortschrittsanzeige "x von y gelernt" mit zugaenglichem Balken.
-- [ ] Leerzustand mit Hinweis auf den Button.
-- [ ] Die Karten werden mit einer festen Anzahl von Abfragen geladen,
-      unabhaengig von ihrer Zahl.
+- [ ] Route `/export/data.json` (`core:export_json`), nur GET, LoginRequired.
+- [ ] Antwort mit `Content-Type: application/json` und
+      `Content-Disposition: attachment; filename="learning-companion-data-<JJJJ-MM-TT>.json"`;
+      gueltiges, UTF-8-kodiertes JSON (Umlaute nicht escaped), eingerueckt.
+- [ ] Inhalt: `format_version`, `exported_at` (ISO 8601), `user`
+      (`username`, `email`, `date_joined`), `profile` (`name`, `cohort`,
+      `focus_areas`, Zeitstempel) und `goals` -- je Goal alle Felder sowie
+      verschachtelt `sessions` (inkl. Tags), `resources`, `ai_feedbacks` und
+      `flashcards`.
+- [ ] Ein Block `statistics` enthaelt die Kennzahlen des Dashboards:
+      `goals_total`, `sessions_total`, `minutes_total`, `goals_by_status`
+      (jeder Status, auch mit 0) und `minutes_by_tag` (absteigend nach Minuten).
+- [ ] Sicherheitsrelevante Felder sind **nicht** enthalten: kein Passwort-Hash,
+      keine Flags wie `is_staff`/`is_superuser`, keine Session- oder API-Schluessel.
+- [ ] Die Anzahl der DB-Abfragen ist unabhaengig von der Zahl der Goals.
 
-### Isolation und Sicherheit
+### Isolation
 
-- [ ] Alle Routen erfordern Login. Fuer fremde Goals bzw. Karten liefern sie
-      **404**, ohne etwas zu aendern; bei fremden Goals wird der Service gar
-      nicht erst aufgerufen.
-- [ ] Karten eines Goals erscheinen nie auf der Seite eines anderen Goals.
-- [ ] KI-Text wird escaped ausgegeben.
-- [ ] Wird ein Goal geloescht, verschwinden seine Karten (CASCADE); die
-      Loesch-Bestaetigung nennt sie.
+- [ ] Alle Querysets der Exporte filtern auf `request.user` (`user=` bzw.
+      `goal__user=`); es gibt keinen URL-Parameter, ueber den ein anderer Nutzer
+      adressiert werden koennte.
+- [ ] Tests mit zwei Nutzern belegen fuer **jeden** der drei Exporte, dass kein
+      Titel, keine Notiz, keine Ressource, keine Lernkarte und kein KI-Eintrag des
+      anderen Nutzers enthalten ist.
 
 ### Tests
 
-- [ ] Service: Mock-Ergebnis, Schema-Parameter im SDK-Aufruf, gueltige
-      Antwort, ungueltiges JSON, falsche Struktur, leere Felder, zu wenige und
-      zu viele Karten, Duplikate, Refusal, Prompt nur mit eigenen Goal-Daten.
-- [ ] Views: Speichern, Fehlerfall ohne Speichern, Umschalten, Loeschen,
-      GET -> 405, Login-Pflicht, 404 ohne Aenderung bei fremden Daten,
-      Service-Aufruf bei fremdem Goal ausgeschlossen.
-- [ ] Anzeige: Akkordeon, Sortierung, Fortschritt, Leerzustand,
-      Abfrage-Anzahl, keine Karten anderer Goals.
-- [ ] Alle Tests deterministisch und ohne Netzwerk (Mock bzw. gepatchtes SDK);
-      alle Bestandstests gruen.
+- [ ] Neue Testdatei `core/tests/test_export.py`: Login-Pflicht aller vier
+      Routen, 405 fuer POST auf die Downloads, Response-Typen
+      (`StreamingHttpResponse`/`FileResponse`), Header (Content-Type,
+      Content-Disposition), exakter CSV-Header, CSV-Inhalt inkl. Quoting und
+      Formel-Schutz, ZIP-Inhalt und Frontmatter, JSON-Struktur und Statistiken, ausgeschlossene
+      Felder, Abfrage-Anzahl, Navigation.
+- [ ] Die komplette Testsuite (`python manage.py test`) und `python manage.py check`
+      laufen gruen.
 
 ## 3. Technische Rahmenbedingungen & Out-of-Scope
 
-**Rahmenbedingungen**
-
-- `openai` SDK 1.x; Structured Outputs ueber `chat.completions.create` mit
-  `response_format={"type": "json_schema", ...}`. Das JSON wird selbst
-  geparst und validiert, damit jeder Fehlerfall explizit behandelt und
-  testbar ist.
-- `minItems`/`maxItems` werden bewusst **nicht** ins Schema geschrieben: Die
-  Anzahl wird ohnehin im Code durchgesetzt, und ein im Strict-Modus nicht
-  unterstuetztes Schluesselwort wuerde jede Anfrage mit einem Schemafehler
-  scheitern lassen.
-- Das Akkordeon nutzt Bootstraps eigene Collapse-Komponente; es kommt kein
-  zusaetzliches JavaScript hinzu ausser der Erweiterung des bestehenden
-  Ladezustands-Scripts.
-- Meldungen, die in einem Abschnitt statt oben auf der Seite erscheinen,
-  werden vereinheitlicht (KI-Verlauf und Lernkarten nutzen denselben
-  Mechanismus).
-- Bestehende Texte, auf die Tests pruefen, bleiben wortgleich.
-
-**Out-of-Scope**
-
-- Keine Wiederholungsplanung (Spaced Repetition), keine Faelligkeitsdaten.
-- Kein Bearbeiten von Karten und kein manuelles Anlegen.
-- Kein separater Vollbild-Quizmodus, keine Punkte oder Statistiken ueber das
-  "x von y gelernt" hinaus.
-- Keine Lernkarten im Dashboard.
-- Keine Aenderung an Zusammenfassung, naechsten Schritten oder deren Prompts.
+- Nur Python-Standardbibliothek (`csv`, `zipfile`, `json`, `io`); keine neue
+  Abhaengigkeit, keine Migration.
+- Die Export-Logik liegt datenbankseitig nur lesend in einem eigenen Modul
+  `core/services/export_service.py`; die Views sind duenn.
+- Downloads per GET sind vertretbar: sie sind rein lesend und haben keine
+  Seiteneffekte. Sie sind durch Login und `request.user`-Scoping geschuetzt.
+- Der Formel-Schutz gilt bewusst nur fuer die CSV (Zielgruppe
+  Tabellenkalkulation). Der JSON-Dump bleibt verlustfrei; dort ist er
+  unnoetig, und Markdown wird nicht als Formel interpretiert.
+- **Out-of-Scope:** Import/Wiederherstellung aus einem Backup, asynchrone
+  Erzeugung per Task-Queue oder E-Mail-Versand, zeitgesteuerte Backups,
+  Exporte fuer Administratoren bzw. anderer Nutzer, Statistiken als eigene
+  Datei (sie stehen im JSON-Block `statistics`, die Rohdaten in CSV und JSON),
+  Wochen-Statistik, PDF-Export, Konto-Loeschung (Art. 17 DSGVO).
+- Datenmengen einzelner Nutzer sind klein; das ZIP wird im Speicher erzeugt.
+  Fuer die potenziell laengste Liste (Sitzungen) streamt die CSV zeilenweise.

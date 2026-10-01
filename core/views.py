@@ -1,10 +1,15 @@
+import json
+
 from django.contrib import messages
 from django.contrib.auth import login
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db.models import Count, Sum
 from django.db.models.functions import TruncWeek
+from django.http import FileResponse, HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse_lazy
+from django.utils.cache import add_never_cache_headers
 from django.views import View
 from django.views.generic import (
     CreateView,
@@ -23,7 +28,7 @@ from core.forms import (
     ResourceForm,
 )
 from core.models import AIFeedback, Flashcard, Goal, LearningSession, Profile, Resource
-from core.services import ai_service
+from core.services import ai_service, export_service
 
 
 class HomeView(TemplateView):
@@ -483,6 +488,80 @@ class FlashcardDeleteView(OwnFlashcardMixin, View):
         karte.delete()
         messages.success(request, "Die Lernkarte wurde geloescht.", extra_tags=LERNKARTEN_TAG)
         return self.zurueck(karte)
+
+
+# --- Export -----------------------------------------------------------------
+
+
+class ExportCenterView(LoginRequiredMixin, TemplateView):
+    template_name = "core/export_center.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["goals_anzahl"] = Goal.objects.filter(user=self.request.user).count()
+        context["sessions_anzahl"] = LearningSession.objects.filter(
+            goal__user=self.request.user
+        ).count()
+        return context
+
+
+class ExportDownloadMixin(LoginRequiredMixin):
+    """Gemeinsamer Rahmen aller Downloads.
+
+    Nur GET (alles andere -> 405): ein Export ist rein lesend. Es gibt keinen
+    URL-Parameter, der einen Nutzer adressiert -- exportiert wird immer
+    request.user. Persoenliche Daten sollen in keinem Browser- oder Proxy-Cache
+    liegen bleiben, daher no-store.
+    """
+
+    def build_response(self, user):
+        raise NotImplementedError
+
+    def get(self, request):
+        response = self.build_response(request.user)
+        add_never_cache_headers(response)
+        return response
+
+
+def attachment_header(dateiname):
+    return f'attachment; filename="{dateiname}"'
+
+
+class ExportSessionsCSVView(ExportDownloadMixin, View):
+    def build_response(self, user):
+        response = StreamingHttpResponse(
+            export_service.iter_sessions_csv(user),
+            content_type="text/csv; charset=utf-8",
+        )
+        response["Content-Disposition"] = attachment_header(
+            export_service.export_filename("sessions", "csv")
+        )
+        return response
+
+
+class ExportGoalsZipView(ExportDownloadMixin, View):
+    def build_response(self, user):
+        return FileResponse(
+            export_service.build_goals_zip(user),
+            as_attachment=True,
+            filename=export_service.export_filename("goals", "zip"),
+            content_type="application/zip",
+        )
+
+
+class ExportJSONView(ExportDownloadMixin, View):
+    def build_response(self, user):
+        inhalt = json.dumps(
+            export_service.build_user_dump(user),
+            cls=DjangoJSONEncoder,
+            ensure_ascii=False,
+            indent=2,
+        )
+        response = HttpResponse(inhalt, content_type="application/json; charset=utf-8")
+        response["Content-Disposition"] = attachment_header(
+            export_service.export_filename("data", "json")
+        )
+        return response
 
 
 # --- Dashboard --------------------------------------------------------------

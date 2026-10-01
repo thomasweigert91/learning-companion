@@ -45,6 +45,13 @@ Jeder Nutzer sieht ausschließlich seine eigenen Daten.
 - **Mock-Modus:** Ohne API-Schlüssel, oder mit `AI_MOCK_MODE=True`, liefert die App deterministische Platzhalter-Antworten. Lokal funktioniert also alles auch ohne OpenAI-Konto und ohne Kosten.
 - In den Prompt gelangen nur Daten des jeweiligen Lernziels. Fehler wie Timeout oder Rate-Limit erscheinen als verständliche Meldung und nie als Stacktrace.
 
+### Export & Backup
+Unter **Export** (`/export/`) lassen sich die eigenen Daten herunterladen:
+- **Lernsitzungen als CSV:** Spalten `Goal, Date, Duration (min), Tags, Notes`, chronologisch sortiert. Die Datei hat ein UTF-8-BOM, damit Excel Umlaute richtig anzeigt, und wird zeilenweise gestreamt. Zellen, die mit `=`, `+`, `-` oder `@` beginnen, bekommen ein führendes `'`, damit eine Tabellenkalkulation sie nicht als Formel ausführt.
+- **Goals als Markdown-ZIP:** eine Datei `goals/<id>-<slug>.md` je Lernziel, mit YAML-Frontmatter (Status, Zeitstempel, Anzahl Sitzungen, Minuten), Ressourcen und Sitzungshistorie. Gut geeignet für Obsidian, ein Wiki oder Git.
+- **Vollständiges Backup als JSON:** Konto, Profil, Lernziele mit Sitzungen, Ressourcen, KI-Verlauf und Lernkarten sowie die Kennzahlen des Dashboards. Gedacht für die Datenübertragbarkeit nach Art. 20 DSGVO. Passwort-Hash und Berechtigungs-Flags sind nicht enthalten.
+- Jeder Export enthält ausschließlich Daten des angemeldeten Nutzers. Die Downloads werden nicht gecacht (`Cache-Control: no-store`).
+
 ### Oberfläche
 - Responsives Design mit **Bootstrap 5.3** und **Bootstrap Icons**, per CDN mit Subresource Integrity eingebunden.
 - Barrierearm umgesetzt: Skip-Link, Landmarks, Formularfehler sind per ARIA mit den Feldern verknüpft, Tabellen haben Captions, Fortschrittsbalken tragen ARIA-Werte, und Status wird nie nur über Farbe vermittelt.
@@ -166,6 +173,7 @@ core/
   views.py                 Alle Views, strikt auf den angemeldeten Nutzer gefiltert
   forms.py                 Formulare (Registrierung, Profil, Goal, Session, Ressource)
   services/ai_service.py   Einzige Stelle, die das OpenAI-SDK kennt
+  services/export_service.py  CSV-, Markdown-ZIP- und JSON-Export (nur lesend)
   templatetags/ui.py       Bootstrap-Helfer für Formulare und Navigation
   templates/               Django-Templates
   tests/                   Testsuite

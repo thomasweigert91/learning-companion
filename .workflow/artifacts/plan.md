@@ -1,207 +1,149 @@
-# Implementierungs-Plan: KI-Lernkarten-Generator mit interaktiver Abfrage
+# Implementierungs-Plan: Export & Backup Center
 
 ## 1. Betroffene Dateien
 
-- Ändern: `core/models.py` (Modell `Flashcard`)
-- Neu: `core/migrations/0005_flashcard.py` (per `makemigrations`)
-- Ändern: `core/admin.py` (Registrierung `Flashcard`)
-- Ändern: `core/services/ai_service.py` (`generate_flashcards`, Schema, Parser, Mock; `_call_openai` um `response_format` und Refusal-Prüfung erweitert)
-- Ändern: `core/views.py` (Mixin um Speicher-Hook verallgemeinert; drei neue Views; Kontext der Detailseite; einheitliche Abschnitts-Meldungen)
-- Ändern: `core/urls.py` (drei Routen)
-- Ändern: `core/templates/core/goal_detail.html` (dritter KI-Button, Abschnitt "Lernkarten")
-- Neu: `core/templates/core/_flashcards.html` (Akkordeon-Partial)
-- Neu: `core/templates/core/_abschnitt_meldungen.html` (Meldungen innerhalb eines Abschnitts)
-- Ändern: `core/templates/core/_ai_timeline.html` (nutzt das neue Meldungs-Partial)
-- Ändern: `core/templates/base.html` (überspringt Abschnitts-Meldungen generisch)
-- Ändern: `core/templates/core/goal_confirm_delete.html` (Hinweis auf Lernkarten)
-- Ändern: `core/tests/test_ai_views.py` (Ladezustand: drei statt zwei KI-Formulare)
-- Ändern: `core/tests/test_ai_feedback.py` (schlüsselartiges Test-Literal ersetzt, siehe unten)
-- Neu: `core/tests/test_flashcards.py`
-
-**Vorab behoben:** `test_ai_feedback.py` enthielt seit Feature 8 das Literal
-`"sk-test-…"` als Test-Schlüssel. Das verstößt gegen die Projektkonvention aus
-Feature 4 (kein schlüsselartiges Literal im Repository, siehe
-`TEST_SCHLUESSEL` in `test_ai_service.py`) und würde von Secret-Scannern
-gemeldet. Ersetzt durch den Platzhalter der Konvention.
+- Neu: `core/services/export_service.py` (reine Lese-Logik: CSV-Zeilen, Markdown, ZIP, JSON-Dump, Statistiken)
+- Ändern: `core/views.py` (vier Views: Export-Seite, CSV, ZIP, JSON)
+- Ändern: `core/urls.py` (vier Routen unter `export/`)
+- Ändern: `core/templatetags/ui.py` (Navigationsbereich `export`)
+- Ändern: `core/templates/base.html` (Menüpunkt "Export")
+- Neu: `core/templates/core/export_center.html` (Seite mit drei Cards)
+- Neu: `core/tests/test_export.py`
+- Ändern: `README.md` (Funktionsabschnitt "Export & Backup")
 
 ## 2. Datenmodelle & Migrationen
 
-```python
-class Flashcard(models.Model):
-    goal = models.ForeignKey(Goal, on_delete=models.CASCADE, related_name="flashcards")
-    question = models.TextField()
-    answer = models.TextField()
-    is_mastered = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
+Keine. Es werden ausschließlich bestehende Modelle gelesen (`Goal`,
+`LearningSession`, `Tag`, `Resource`, `AIFeedback`, `Flashcard`, `Profile`).
+Keine Migration, keine neue Abhängigkeit (nur `csv`, `zipfile`, `json`, `io`).
 
-    class Meta:
-        # Abfrage-Reihenfolge: offene Karten zuerst (False < True), darin neueste zuerst.
-        ordering = ["is_mastered", "-created_at", "-pk"]
-```
+Scoping-Einstieg ist immer `request.user`:
 
-- Kein `user`-Feld; Besitz über `goal__user` wie bei `LearningSession`,
-  `Resource`, `AIFeedback`.
-- Migration `0005_flashcard`: ein `CREATE TABLE` plus Index auf `goal_id`,
-  keine bestehende Tabelle berührt.
+- Goals: `Goal.objects.filter(user=user)`
+- Sitzungen: `LearningSession.objects.filter(goal__user=user)`
+- Kind-Daten der Goals (Ressourcen, KI-Einträge, Lernkarten, Sitzungen) nur per
+  `prefetch_related` über die bereits gescopten Goals -- strukturell kein
+  Fremdzugriff möglich.
 
 ## 3. Schrittweise Umsetzung
 
-- [ ] **Schritt 1: Setup & Models** -- Modell, Migration erzeugen und
-      anwenden, Admin (`list_display = ("question", "goal", "is_mastered", "created_at")`,
-      `list_filter = ("is_mastered",)`).
+- [ ] **Schritt 1: Setup -- Service-Modul** `core/services/export_service.py`
 
-- [ ] **Schritt 2: Service**
+      *CSV:*
+      - `CSV_HEADER = ["Goal", "Date", "Duration (min)", "Tags", "Notes"]`
+      - `_csv_safe(wert)`: Text mit führendem `=`, `+`, `-`, `@`, `\t`, `\r`
+        erhält ein `'` (OWASP CSV Injection).
+      - `sessions_for_export(user)`: `filter(goal__user=user)
+        .select_related("goal").prefetch_related("tags").order_by("date", "pk")`
+        (Tags kommen über `Tag.Meta.ordering` bereits alphabetisch).
+      - `iter_sessions_csv(user)`: Generator; schreibt über einen
+        Pseudo-Buffer (`write()` gibt die Zeile zurück) mit `csv.writer` je
+        Zeile einen String; erste Ausgabe ist BOM + Header. Iteration über
+        `.iterator(chunk_size=500)` -- Prefetch bleibt seit Django 4.1 auch
+        mit `iterator()` wirksam, die Abfragezahl bleibt konstant.
 
-      *Konstanten:* `MIN_FLASHCARDS = 3`, `MAX_FLASHCARDS = 5`,
-      `MAX_EXISTING_QUESTIONS = 30` (Deckel für die Duplikat-Liste im Prompt).
+      *Markdown/ZIP:*
+      - `goals_for_export(user)`: `Goal.objects.filter(user=user)
+        .order_by("pk").prefetch_related(Prefetch("sessions", date/pk
+        aufsteigend, mit Tags), "resources")`; der JSON-Dump ergänzt
+        `ai_feedbacks` und `flashcards`.
+      - `goal_filename(goal)`: `goals/<pk>-<slugify(title) or "goal">.md`.
+      - `_yaml_str(wert)`: `json.dumps(wert, ensure_ascii=False)` -- ein
+        JSON-String ist ein gültiger YAML-Double-Quoted-Scalar; damit sind
+        `:`, `"`, `#` und Zeilenumbrüche sicher.
+      - `goal_markdown(goal)`: Frontmatter (`id`, `title`, `status`,
+        `created`, `updated`, `sessions`, `total_minutes`), `# Titel`,
+        Beschreibung, `## Ressourcen`, `## Lernsitzungen` (je Sitzung
+        `### JJJJ-MM-TT -- N Min.`, Tags, Notizen). `[`/`]` in Link-Texten
+        werden escaped. Leere Abschnitte: `_Keine Ressourcen._` bzw.
+        `_Keine Lernsitzungen._`
+      - `build_goals_zip(user) -> io.BytesIO`: `ZipFile(..., "w",
+        ZIP_DEFLATED)`, je Goal `writestr`, Puffer auf 0 zurückspulen.
 
-      *Schema* (Strict Structured Output):
-      ```python
-      FLASHCARD_RESPONSE_FORMAT = {
-          "type": "json_schema",
-          "json_schema": {
-              "name": "lernkarten",
-              "strict": True,
-              "schema": {
-                  "type": "object",
-                  "properties": {
-                      "cards": {
-                          "type": "array",
-                          "items": {
-                              "type": "object",
-                              "properties": {
-                                  "question": {"type": "string"},
-                                  "answer": {"type": "string"},
-                              },
-                              "required": ["question", "answer"],
-                              "additionalProperties": False,
-                          },
-                      }
-                  },
-                  "required": ["cards"],
-                  "additionalProperties": False,
-              },
-          },
-      }
-      ```
-      Strict-Modus verlangt `required` für alle Felder und
-      `additionalProperties: false` auf jeder Objektebene -- beides erfüllt.
-      Keine `minItems`/`maxItems` (siehe Ticket, Rahmenbedingungen).
+      *JSON:*
+      - `FORMAT_VERSION = 1`
+      - `build_user_dump(user) -> dict`: `format_version`, `exported_at`,
+        `user` (nur `username`, `email`, `date_joined`), `profile`
+        (`name`, `cohort`, `focus_areas`, `created_at`, `updated_at`; `None`
+        falls kein Profil), `goals` (alle Felder + verschachtelt `sessions`,
+        `resources`, `ai_feedbacks`, `flashcards`), `statistics`.
+        Feldauswahl explizit (Allowlist) -- kein `model_to_dict`, damit nie
+        versehentlich `password`, `is_staff` usw. hineinrutschen.
+      - `_statistics(goals)`: aus den bereits geladenen Daten, ohne weitere
+        Abfragen: `goals_total`, `sessions_total`, `minutes_total`,
+        `goals_by_status` (alle `Goal.Status`-Werte, auch 0),
+        `minutes_by_tag` (Session mit mehreren Tags zählt -- wie im
+        Dashboard -- in jede Kategorie; sortiert `-minutes`, `tag`).
+      - `export_filename(art, endung)`:
+        `learning-companion-<art>-<timezone.localdate()>.<endung>`.
 
-      *`_call_openai(prompt, response_format=None)`:* reicht `response_format`
-      nur durch, wenn gesetzt -- die beiden bestehenden Aufrufe bleiben
-      byte-identisch. Neu: Liefert das Modell eine `refusal`, wird eine
-      `AIServiceError` geworfen. Damit sie nicht vom generischen
-      `except Exception` in "nicht verfügbar" umgedeutet wird, steht davor ein
-      `except AIServiceError: raise`.
+- [ ] **Schritt 2: Business-Logik / Views** (`core/views.py`, Abschnitt "Export")
+      - `ExportCenterView(LoginRequiredMixin, TemplateView)`: Kontext
+        `sessions_anzahl`, `goals_anzahl` (gescopte `count()`).
+      - `ExportSessionsCSVView(LoginRequiredMixin, View)`, nur `get`:
+        `StreamingHttpResponse(iter_sessions_csv(user),
+        content_type="text/csv; charset=utf-8")` + `Content-Disposition`.
+      - `ExportGoalsZipView(LoginRequiredMixin, View)`, nur `get`:
+        `FileResponse(build_goals_zip(user), as_attachment=True,
+        filename=..., content_type="application/zip")`.
+      - `ExportJSONView(LoginRequiredMixin, View)`, nur `get`:
+        `HttpResponse(json.dumps(dump, cls=DjangoJSONEncoder,
+        ensure_ascii=False, indent=2), content_type="application/json;
+        charset=utf-8")` + `Content-Disposition: attachment`.
+      - Gemeinsamer `ExportDownloadMixin`: definiert nur `get` (POST & Co.
+        -> 405) und setzt per `add_never_cache_headers` `Cache-Control:
+        no-store` -- persönliche Daten sollen in keinem Browser- oder
+        Proxy-Cache landen. Die Unterklassen liefern nur `build_response(user)`.
+      - Routen (`core/urls.py`): `export/` -> `export_center`,
+        `export/sessions.csv` -> `export_sessions_csv`,
+        `export/goals.zip` -> `export_goals_zip`,
+        `export/data.json` -> `export_json`. Keine PK-Parameter.
 
-      *`_build_flashcards_prompt(goal, vorhandene_fragen)`:* Aufgabe (3–5
-      Paare auf Deutsch, aus dem Kontext beantwortbar, knappe Antworten), dann
-      `_format_context(goal)`, dann ggf. "Diese Fragen existieren bereits …".
+- [ ] **Schritt 3: UI / Templates**
+      - `core/templatetags/ui.py`: `("export", "export")` in `NAV_SECTIONS`.
+      - `base.html`: `{% nav_link "core:export_center" "Export" "download" "export" %}`
+        nach "Sessions".
+      - `export_center.html`: Kopf mit `<h1>`, drei Cards (CSV / Markdown-ZIP /
+        JSON) mit Icon, Text, Umfang und `<a class="btn ..." href="..."
+        download>`; Hinweis zur DSGVO und dass ausschließlich eigene Daten
+        exportiert werden. Alle `<i class="bi ...">` mit `aria-hidden="true"`.
+      - README: Abschnitt "Export & Backup" unter "Funktionen".
 
-      *`_parse_flashcards(rohtext, vorhandene_fragen)`:*
-      1. `json.loads` → bei `JSONDecodeError` loggen + `AIServiceError`.
-      2. Kein `dict` oder `cards` keine Liste → loggen + `AIServiceError`.
-      3. Je Eintrag: nur `dict` mit nicht-leerem `str` in beiden Feldern;
-         `strip()`; Duplikat-Schlüssel `frage.strip().casefold()` gegen bereits
-         Gesehenes und Vorhandenes.
-      4. Weniger als `MIN_FLASHCARDS` → `AIServiceError`;
-         mehr als `MAX_FLASHCARDS` → kürzen.
-
-      *`generate_flashcards(goal)`:* vorhandene Fragen (gedeckelt) laden;
-      im Mock `_mock_flashcards(goal)`, sonst Prompt → `_call_openai(…,
-      FLASHCARD_RESPONSE_FORMAT)` → Parser. Rückgabe: Liste von Dicts. Keine
-      DB-Schreibzugriffe.
-
-      *`_mock_flashcards(goal)`:* drei Karten aus Titel, Sitzungszahl/-minuten
-      und Ressourcenzahl -- deterministisch, mit "[Mock-Modus]" markiert.
-
-- [ ] **Schritt 3: Views**
-
-      *Mixin verallgemeinern:* `GoalAIActionMixin.post` ruft nach Erfolg
-      `self.save_result(goal, ergebnis)` und danach `self.success_response(goal, anzahl)`.
-      Für Zusammenfassung/Schritte bleibt das Verhalten identisch (AIFeedback
-      anlegen, Redirect auf die Detailseite, Fehler oben). Neue Klassenattribute
-      `error_extra_tags` und `anchor` steuern Meldungsort und Sprungziel.
-
-      `FlashcardGenerateView`: `run_service` → `generate_flashcards`;
-      `save_result` → `Flashcard.objects.bulk_create(...)`; Erfolgsmeldung
-      "n Lernkarten erstellt." im Abschnitt; Fehler ebenfalls im Abschnitt;
-      Redirect `#lernkarten`.
-
-      `FlashcardToggleView` (POST): `get_object_or_404(Flashcard.objects
-      .filter(goal__user=request.user).select_related("goal"), pk=pk)`,
-      `is_mastered = not is_mastered`, `save(update_fields=["is_mastered"])`.
-
-      `FlashcardDeleteView` (POST): gleiches Queryset, `delete()`.
-
-      *Detailseite:* `cards = list(self.object.flashcards.all())` (eine
-      Abfrage) → `flashcards`, `flashcards_gelernt`, `flashcards_gesamt`.
-
-      *Abschnitts-Meldungen vereinheitlichen:* `ABSCHNITT_TAG = "abschnitt"`;
-      `KI_VERLAUF_TAG = "abschnitt ki-verlauf"`, `LERNKARTEN_TAG =
-      "abschnitt lernkarten"`. `base.html` überspringt alles mit
-      `"abschnitt" in message.extra_tags.split`; das Partial
-      `_abschnitt_meldungen.html` zeigt die Meldungen eines Bereichs mit
-      passender Alert-Farbe (`error` → `danger`).
-
-- [ ] **Schritt 4: URLs** -- `goals/<pk>/ai/flashcards/` → `goal_ai_flashcards`;
-      `flashcards/<pk>/toggle/` → `flashcard_toggle`;
-      `flashcards/<pk>/delete/` → `flashcard_delete`.
-
-- [ ] **Schritt 5: UI / Templates**
-      - KI-Card: dritter Button "Lernkarten generieren" mit
-        `data-ki-aktion`/`data-ladetext="Erstelle Lernkarten..."` → das
-        bestehende Script erfasst ihn ohne Änderung.
-      - Abschnitt `#lernkarten` vor dem KI-Verlauf: Kopf mit Zähler, darunter
-        Fortschritt "x von y gelernt" (`progress` mit ARIA-Werten), dann das
-        Akkordeon.
-      - `_flashcards.html`: `accordion` mit je einem Item; Kopf =
-        `accordion-button collapsed` mit Frage (+ Badge "Gelernt");
-        Body = Antwort (`linebreaksbr`) und zwei POST-Formulare
-        (Umschalten, Löschen) mit sprechenden `aria-label`s.
-        IDs pro Karte (`karte-<pk>`), damit `aria-controls` eindeutig ist.
-      - Leerzustand: "Noch keine Lernkarten. …".
-
-- [ ] **Schritt 6: Tests** -- siehe Abschnitt 4.
-
-- [ ] **Schritt 7: Validierung** -- Migration, ruff, Testsuite, Hook;
-      Sichtprüfung im Browser über eine zweite Server-Instanz mit
-      `AI_MOCK_MODE=True` (keine API-Kosten), Prüfnutzer danach löschen.
+- [ ] **Schritt 4: Tests** (`core/tests/test_export.py`)
 
 ## 4. Validierung & Test-Strategie
 
-### Neue Tests (`core/tests/test_flashcards.py`)
+Testdaten: Nutzer A mit zwei Goals (eines mit Sonderzeichen-Titel
+`Django: "ORM" #1`, eines ohne Sitzungen), Sitzungen mit mehreren Tags,
+mehrzeiligen Notizen und einer Notiz `=SUMME(A1)`, Ressource, KI-Eintrag,
+Lernkarte. Nutzer B mit eindeutig markierten Daten (`FREMD-...`) in allen
+Modellen und denselben Tags.
 
-| Klasse | Testfälle |
-|---|---|
-| `ModellTests` | Sortierung (offen vor gelernt, neueste zuerst); CASCADE beim Goal-Löschen |
-| `MockTests` | 3 Karten, deterministisch, mit Goal-Titel, kein `_call_openai`-Aufruf |
-| `SdkAufrufTests` (Mock aus, SDK gepatcht) | `response_format` mit `json_schema`, `strict: true`, `additionalProperties: false`; konfiguriertes Modell; Prompt enthält nur eigene Goal-Daten und vorhandene Fragen |
-| `ParserTests` | gültige Antwort; ungültiges JSON; Liste statt Objekt; `cards` fehlt / kein Array; Einträge mit leerem/fehlendem Text verworfen; < 3 → Fehler; > 5 → gekürzt; Duplikate in Antwort und gegen Bestand; jeder Fehlerfall wird geloggt |
-| `RefusalTests` | `message.refusal` → `AIServiceError` mit eigener Meldung (nicht "nicht verfügbar") |
-| `GenerierenViewTests` | Karten gespeichert und angehängt (Bestand + Lernstatus bleiben); Redirect `#lernkarten`; Meldung im Abschnitt, genau einmal; Fehler → nichts gespeichert, Meldung im Abschnitt; GET → 405 |
-| `VerwaltenViewTests` | Umschalten hin und zurück; Löschen nur dieser Karte; GET → 405 |
-| `AnzeigeTests` | Akkordeon mit Frage im Kopf, Antwort im eingeklappten Body; Badge "Gelernt"; Fortschritt; Leerzustand; Query-Anzahl bei 2 und 8 Karten gleich; keine Karten anderer Goals |
-| `ScopingTests` | Login-Pflicht für alle drei Routen; fremdes Goal → 404 und Service nicht aufgerufen; fremde Karte umschalten/löschen → 404 ohne Änderung; Gegenprobe mit eigener Karte |
+- **Zugriff:** alle vier Routen anonym -> 302 auf Login mit `next`;
+  POST auf die drei Downloads -> 405; Downloads tragen `no-store`.
+- **CSV:** `StreamingHttpResponse`, Content-Type, Content-Disposition mit
+  Datum; BOM vorhanden; erste Zeile exakt `Goal,Date,Duration (min),Tags,Notes`;
+  Zeilenzahl = Sitzungen von A; Reihenfolge aufsteigend; Tags `Django; Python`;
+  mehrzeilige Notiz per `csv.reader` unverändert; Formel mit `'` neutralisiert;
+  leerer Nutzer -> nur Header; Abfragezahl bei 1 vs. 5 Sitzungen gleich.
+- **ZIP:** `FileResponse`, Content-Type, Content-Disposition; `zipfile.is_zipfile`;
+  Dateinamen = `goals/<pk>-<slug>.md` je Goal von A; gleicher Titel -> zwei
+  Dateien; Frontmatter-Werte per Zeilenvergleich (Titel gequotet), Ressourcen-
+  Link, Sitzungen, Hinweistext bei leerem Goal; leerer Nutzer -> leeres ZIP.
+- **JSON:** Content-Type, Content-Disposition, `json.loads`; Struktur und
+  verschachtelte Daten; Umlaute unescaped; `password`/`is_staff`/`is_superuser`
+  nirgends im Text; Statistiken korrekt (Status mit 0, Mehrfach-Tags);
+  Abfragezahl bei 1 vs. 4 Goals gleich.
+- **Isolation:** für jeden Export: kein `FREMD`-Marker im entpackten Inhalt.
+- **Navigation/UI:** Seite rendert mit Zählern und drei Download-Links;
+  "Export" aktiv auf `/export/`, genau ein aktiver Nav-Link, eine `<h1>`,
+  Icons `aria-hidden`.
 
-### Anpassung bestehender Tests
+Kommandos:
 
-| Test | Änderung | Grund |
-|---|---|---|
-| `LadezustandTests.test_beide_formulare_markiert_mit_ladetext` (`test_ai_views.py`) | erwartet 3 statt 2 markierte KI-Formulare und den dritten Ladetext | Die KI-Card bekommt einen dritten Button; der Test sichert genau diesen Markup-Vertrag. |
-| `test_ai_feedback.py`, Test-Schlüssel | Literal ersetzt | Konvention, siehe Abschnitt 1 |
-
-**Kommandos** (im aktiven `.venv`):
-
-```powershell
-python manage.py makemigrations core
-python manage.py migrate
-python manage.py makemigrations --check --dry-run
-ruff check .
+```
+python manage.py check
 python manage.py test
+ruff check .
 .\.workflow\hooks\validate_code.ps1
 ```
-
-**Abnahmekriterium:** `validate_code.ps1` endet mit Exit-Code 0; alle Bestandstests
-bis auf die oben dokumentierte Anpassung unverändert grün; alle neuen Tests grün.

@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+
+{% block title %}Export &ndash; Learning Companion{% endblock %}
+
+{% block content %}
+    <div class="mb-4">
+        <h1 class="h2 mb-1">Export &amp; Backup</h1>
+        <p class="text-body-secondary mb-0">Deine Daten zum Mitnehmen &ndash; fuer Tabellen, Notizen oder als vollstaendiges Backup</p>
+    </div>
+
+    <div class="alert alert-info d-flex gap-2" role="note">
+        <i class="bi bi-shield-lock" aria-hidden="true"></i>
+        <div>
+            Jeder Export enthaelt ausschliesslich deine eigenen Daten. Der JSON-Export
+            umfasst alle zu deinem Konto gespeicherten Inhalte (Datenuebertragbarkeit nach Art. 20 DSGVO).
+        </div>
+    </div>
+
+    <div class="row row-cols-1 row-cols-lg-3 g-3">
+        <div class="col">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body">
+                    <div class="d-flex align-items-center gap-3 mb-3">
+                        <span class="lc-icon-circle bg-success-subtle text-success-emphasis"><i class="bi bi-filetype-csv" aria-hidden="true"></i></span>
+                        <h2 class="h5 mb-0">Lernsitzungen als CSV</h2>
+                    </div>
+                    <p class="text-body-secondary">
+                        Eine Zeile je Sitzung mit Goal, Datum, Dauer in Minuten, Tags und Notizen &ndash;
+                        direkt in Excel, LibreOffice oder Pandas auswertbar.
+                    </p>
+                    <p class="small mb-0"><strong>{{ sessions_anzahl }}</strong> {% if sessions_anzahl == 1 %}Lernsitzung{% else %}Lernsitzungen{% endif %}</p>
+                </div>
+                <div class="card-footer bg-transparent border-0 pt-0 pb-3">
+                    <a class="btn btn-success" href="{% url 'core:export_sessions_csv' %}" download>
+                        <i class="bi bi-download me-1" aria-hidden="true"></i>CSV herunterladen
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <div class="col">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body">
+                    <div class="d-flex align-items-center gap-3 mb-3">
+                        <span class="lc-icon-circle bg-primary-subtle text-primary-emphasis"><i class="bi bi-file-earmark-zip" aria-hidden="true"></i></span>
+                        <h2 class="h5 mb-0">Goals als Markdown (ZIP)</h2>
+                    </div>
+                    <p class="text-body-secondary">
+                        Eine Markdown-Datei je Lernziel mit Frontmatter, Ressourcen und Sitzungshistorie &ndash;
+                        ideal fuer Obsidian, ein Wiki oder Git.
+                    </p>
+                    <p class="small mb-0"><strong>{{ goals_anzahl }}</strong> {% if goals_anzahl == 1 %}Lernziel{% else %}Lernziele{% endif %}</p>
+                </div>
+                <div class="card-footer bg-transparent border-0 pt-0 pb-3">
+                    <a class="btn btn-primary" href="{% url 'core:export_goals_zip' %}" download>
+                        <i class="bi bi-download me-1" aria-hidden="true"></i>ZIP herunterladen
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <div class="col">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body">
+                    <div class="d-flex align-items-center gap-3 mb-3">
+                        <span class="lc-icon-circle bg-warning-subtle text-warning-emphasis"><i class="bi bi-filetype-json" aria-hidden="true"></i></span>
+                        <h2 class="h5 mb-0">Vollstaendiges Backup (JSON)</h2>
+                    </div>
+                    <p class="text-body-secondary">
+                        Profil, Lernziele, Sitzungen, Ressourcen, KI-Verlauf, Lernkarten und Statistiken
+                        in einer maschinenlesbaren Datei.
+                    </p>
+                    <p class="small mb-0">Alle Daten deines Kontos</p>
+                </div>
+                <div class="card-footer bg-transparent border-0 pt-0 pb-3">
+                    <a class="btn btn-warning" href="{% url 'core:export_json' %}" download>
+                        <i class="bi bi-download me-1" aria-hidden="true"></i>JSON herunterladen
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}
