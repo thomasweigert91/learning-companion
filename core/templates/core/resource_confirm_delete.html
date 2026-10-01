@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}Ressource entfernen &ndash; Learning Companion{% endblock %}
+
+{% block content %}
+    <h1>Ressource entfernen</h1>
+
+    <p>
+        Soll die Ressource &bdquo;{{ resource.title }}&ldquo;
+        vom Lernziel &bdquo;{{ resource.goal.title }}&ldquo; wirklich entfernt werden?
+    </p>
+
+    {# Entfernt wird ausschliesslich per POST, nie per GET. #}
+    <form method="post">
+        {% csrf_token %}
+        <button type="submit">Endgueltig entfernen</button>
+    </form>
+
+    <a href="{% url 'core:goal_detail' resource.goal.pk %}">Abbrechen</a>
+{% endblock %}

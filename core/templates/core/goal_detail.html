@@ -35,6 +35,22 @@
         <p>Noch keine Lernsitzungen zu diesem Ziel.</p>
     {% endif %}
 
+    <h2>Ressourcen</h2>
+    {% include "core/_resource_list.html" %}
+
+    <h3>Ressource hinzufuegen</h3>
+    {% if resource_form.errors %}
+        <div class="errors">
+            <p>Bitte korrigiere die folgenden Eingaben:</p>
+            {{ resource_form.errors }}
+        </div>
+    {% endif %}
+    <form action="{% url 'core:resource_create' goal.pk %}" method="post">
+        {% csrf_token %}
+        {{ resource_form.as_p }}
+        <button type="submit">Anhaengen</button>
+    </form>
+
     <p>
         <a href="{% url 'core:goal_edit' goal.pk %}">Bearbeiten</a>
         <a href="{% url 'core:goal_delete' goal.pk %}">Loeschen</a>

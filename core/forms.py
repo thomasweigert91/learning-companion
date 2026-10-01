@@ -2,7 +2,7 @@ from django import forms
 from django.contrib.auth import get_user_model
 from django.contrib.auth.forms import UserCreationForm
 
-from core.models import Goal, LearningSession, Profile
+from core.models import Goal, LearningSession, Profile, Resource
 
 User = get_user_model()
 
@@ -78,3 +78,24 @@ class LearningSessionForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         if user is not None:
             self.fields["goal"].queryset = Goal.objects.filter(user=user)
+
+
+class ResourceForm(forms.ModelForm):
+    """Formular zum Anhaengen einer Ressource an ein Goal.
+
+    "goal" ist bewusst kein Feld: Das Ziel-Goal bestimmt die View aus der URL
+    gegen das auf request.user gescopte Queryset und ist damit nicht per POST
+    ueberschreibbar.
+    """
+
+    class Meta:
+        model = Resource
+        fields = ["url", "title", "type"]
+        widgets = {
+            "url": forms.URLInput(attrs={"placeholder": "https://..."}),
+        }
+        labels = {
+            "url": "URL",
+            "title": "Titel",
+            "type": "Typ",
+        }

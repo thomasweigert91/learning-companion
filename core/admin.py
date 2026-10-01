@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from core.models import Goal, LearningSession, Profile, Tag
+from core.models import Goal, LearningSession, Profile, Resource, Tag
 
 
 @admin.register(Tag)
@@ -29,3 +29,10 @@ class LearningSessionAdmin(admin.ModelAdmin):
     list_filter = ("date",)
     search_fields = ("goal__title", "notes")
     filter_horizontal = ("tags",)
+
+
+@admin.register(Resource)
+class ResourceAdmin(admin.ModelAdmin):
+    list_display = ("title", "goal", "type", "created_at")
+    list_filter = ("type",)
+    search_fields = ("title", "url", "goal__title")

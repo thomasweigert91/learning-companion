@@ -1,7 +1,8 @@
 from django.contrib.auth import login
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.shortcuts import get_object_or_404
+from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
+from django.views import View
 from django.views.generic import (
     CreateView,
     DeleteView,
@@ -11,8 +12,14 @@ from django.views.generic import (
     UpdateView,
 )
 
-from core.forms import GoalForm, LearningSessionForm, ProfileForm, RegistrationForm
-from core.models import Goal, LearningSession, Profile
+from core.forms import (
+    GoalForm,
+    LearningSessionForm,
+    ProfileForm,
+    RegistrationForm,
+    ResourceForm,
+)
+from core.models import Goal, LearningSession, Profile, Resource
 
 
 class HomeView(TemplateView):
@@ -113,6 +120,15 @@ class GoalDetailView(OwnGoalMixin, DetailView):
     template_name = "core/goal_detail.html"
     context_object_name = "goal"
 
+    # Wird von ResourceCreateView gesetzt, um im Fehlerfall das ausgefuellte
+    # Formular zurueckzugeben, ohne die Detailseite zu duplizieren.
+    resource_form = None
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["resource_form"] = self.resource_form or ResourceForm()
+        return context
+
 
 class GoalCreateView(LoginRequiredMixin, CreateView):
     model = Goal
@@ -188,3 +204,55 @@ class SessionDeleteView(OwnSessionMixin, DeleteView):
     template_name = "core/learningsession_confirm_delete.html"
     context_object_name = "session"
     success_url = reverse_lazy("core:session_list")
+
+
+# --- Ressourcen -------------------------------------------------------------
+
+
+class ResourceCreateView(LoginRequiredMixin, View):
+    """Haengt eine Ressource an ein Goal.
+
+    Nur POST: das Formular selbst lebt auf der Goal-Detailseite, ein GET auf
+    diese URL haette keinen eigenen Zweck.
+    """
+
+    def post(self, request, pk):
+        # Das Ziel-Goal kommt aus dem gescopten Queryset, nicht aus dem POST.
+        # Ein fremder PK ergibt 404, bevor irgendetwas geschrieben wird.
+        goal = get_object_or_404(Goal.objects.filter(user=request.user), pk=pk)
+
+        form = ResourceForm(request.POST)
+        if form.is_valid():
+            form.instance.goal = goal
+            form.save()
+            return redirect(goal.get_absolute_url())
+
+        return self.render_detail_with_errors(request, goal, form)
+
+    @staticmethod
+    def render_detail_with_errors(request, goal, form):
+        """Rendert die Goal-Detailseite mit dem fehlerbehafteten Formular.
+
+        Die Detailseite wird nicht erneut dispatcht -- sie ist eine DetailView
+        und wuerde einen POST mit 405 ablehnen. Stattdessen wird ihr Kontext
+        wiederverwendet, damit beide Pfade dieselbe Quelle haben und der
+        Fehlerfall nicht divergiert, falls die Detailseite spaeter waechst.
+        """
+        view = GoalDetailView(resource_form=form)
+        view.setup(request, pk=goal.pk)
+        view.object = goal
+        return view.render_to_response(view.get_context_data(object=goal))
+
+
+class ResourceDeleteView(LoginRequiredMixin, DeleteView):
+    model = Resource
+    template_name = "core/resource_confirm_delete.html"
+    context_object_name = "resource"
+
+    def get_queryset(self):
+        return Resource.objects.filter(goal__user=self.request.user).select_related(
+            "goal"
+        )
+
+    def get_success_url(self):
+        return self.object.goal.get_absolute_url()

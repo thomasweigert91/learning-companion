@@ -1,199 +1,154 @@
-# Implementierungs-Plan: Goals and Sessions — CRUD, Status-Filter und Scoping
+# Implementierungs-Plan: Resource Library — Inline-Anlegen, Typ-Badges und Löschen
 
 ## 1. Betroffene Dateien
 
 **Ändern**
 
-- Ändern: `core/models.py` — Modelle `Goal` und `LearningSession` ergänzen
-- Ändern: `core/forms.py` — `GoalForm` und `LearningSessionForm` ergänzen
-- Ändern: `core/views.py` — Scoping-Mixins und zehn CRUD-Views ergänzen
-- Ändern: `core/urls.py` — zehn Routen ergänzen
-- Ändern: `core/admin.py` — `Goal` und `LearningSession` registrieren
-- Ändern: `core/templates/base.html` — Navigationseinträge "Goals" und "Sessions"
-- Ändern: `core/templates/core/home.html` — Einstiegslinks für eingeloggte Nutzer
+- Ändern: `core/models.py` — Modell `Resource` ergänzen
+- Ändern: `core/forms.py` — `ResourceForm` ergänzen
+- Ändern: `core/views.py` — `GoalDetailView` um das Inline-Formular erweitern, `ResourceCreateView` und `ResourceDeleteView` ergänzen
+- Ändern: `core/urls.py` — zwei Routen ergänzen
+- Ändern: `core/admin.py` — `Resource` registrieren
+- Ändern: `core/templates/core/goal_detail.html` — Ressourcen-Liste mit Badges, Inline-Formular, Lösch-Buttons
+- Ändern: `core/templates/base.html` — minimales Badge-Styling im `<head>`
 
-**Neu — Migration**
+**Neu**
 
-- Neu: `core/migrations/0002_goal_learningsession.py` (per `makemigrations` erzeugt, eingecheckt)
+- Neu: `core/migrations/0003_resource.py` (per `makemigrations` erzeugt, eingecheckt)
+- Neu: `core/templates/core/_resource_list.html` — Teil-Template für die Ressourcen-Liste inkl. Badge und Lösch-Formular
+- Neu: `core/tests/test_resources.py` — Modell, Anlegen, Anzeige und Badge
+- Neu: `core/tests/test_resource_scoping.py` — Mandantentrennung A gegen B
 
-**Neu — Templates Goal**
-
-- Neu: `core/templates/core/goal_list.html`
-- Neu: `core/templates/core/goal_detail.html`
-- Neu: `core/templates/core/goal_form.html`
-- Neu: `core/templates/core/goal_confirm_delete.html`
-
-**Neu — Templates LearningSession**
-
-- Neu: `core/templates/core/learningsession_list.html`
-- Neu: `core/templates/core/learningsession_detail.html`
-- Neu: `core/templates/core/learningsession_form.html`
-- Neu: `core/templates/core/learningsession_confirm_delete.html`
-
-**Neu — Tests**
-
-- Neu: `core/tests/test_goals.py` — Modell, CRUD und Status-Filter für `Goal`
-- Neu: `core/tests/test_sessions.py` — Modell, CRUD und Goal-Bindung für `LearningSession`
-- Neu: `core/tests/test_scoping.py` — Mandantentrennung A gegen B für beide Entitäten
-
-**Unverändert:** `learning_companion/settings.py` (keine neue App, keine neue Abhängigkeit), `requirements.txt`, `core/signals.py`, `core/apps.py`, alle Dateien unterhalb `.workflow/` sowie die drei bestehenden Testmodule aus Feature 1.
+**Unverändert:** `learning_companion/settings.py`, `requirements.txt`, `core/signals.py`, `core/apps.py` sowie alle bestehenden Testmodule aus Feature 1 und 2.
 
 ## 2. Datenmodelle & Migrationen
 
-### `Goal` (`core/models.py`)
+### `Resource` (`core/models.py`)
 
-Status über `models.TextChoices`, damit Choices, Labels und Validierung aus einer Quelle stammen:
+Typ über `models.TextChoices`, konsistent zu `Goal.Status`:
 
 ```python
-class Status(models.TextChoices):
-    PLANNED = "planned", "Geplant"
-    IN_PROGRESS = "in-progress", "In Arbeit"
-    DONE = "done", "Erledigt"
+class Type(models.TextChoices):
+    ARTICLE = "article", "Artikel"
+    VIDEO = "video", "Video"
+    REPO = "repo", "Repository"
+    DOC = "doc", "Dokumentation"
 ```
 
 | Feld | Typ | Optionen |
 | --- | --- | --- |
-| `user` | `ForeignKey` | `settings.AUTH_USER_MODEL`, `on_delete=models.CASCADE`, `related_name="goals"` |
-| `title` | `CharField` | `max_length=200` (Pflichtfeld) |
-| `description` | `TextField` | `blank=True` |
-| `status` | `CharField` | `max_length=20`, `choices=Status.choices`, `default=Status.PLANNED` |
+| `goal` | `ForeignKey` | `Goal`, `on_delete=models.CASCADE`, `related_name="resources"` |
+| `url` | `URLField` | `max_length=500` |
+| `title` | `CharField` | `max_length=200` |
+| `type` | `CharField` | `max_length=20`, `choices=Type.choices`, `default=Type.ARTICLE` |
 | `created_at` | `DateTimeField` | `auto_now_add=True` |
-| `updated_at` | `DateTimeField` | `auto_now=True` |
 
-- `Meta.ordering = ["-updated_at"]`
+- `Meta.ordering = ["-created_at", "-pk"]`
 - `__str__` → `self.title`
-- `get_absolute_url()` → `reverse("core:goal_detail", args=[self.pk])`
 
-Die Längenbegrenzung `max_length=20` deckt den längsten Wert `"in-progress"` (11 Zeichen) ab. Die Ablehnung abweichender Werte durch `full_clean()` leistet der `choices`-Validator.
+Zur Validierung: `URLField` bringt den `URLValidator` mit, der in `full_clean()` greift und `"kein-link"` mit einem Fehler auf `url` ablehnt. `max_length=500` statt der Default-200, weil Doku- und Repo-Links mit Ankern und Query-Parametern schnell lang werden. Die `choices`-Validierung auf `type` leistet ebenfalls `full_clean()`.
 
-### `LearningSession` (`core/models.py`)
-
-| Feld | Typ | Optionen |
-| --- | --- | --- |
-| `goal` | `ForeignKey` | `Goal`, `on_delete=models.CASCADE`, `related_name="sessions"` |
-| `date` | `DateField` | — |
-| `duration` | `PositiveIntegerField` | `validators=[MinValueValidator(1)]`, `help_text="Dauer in Minuten"` |
-| `notes` | `TextField` | `blank=True` |
-| `tags` | `ManyToManyField` | `Tag`, `blank=True`, `related_name="sessions"` |
-
-- `Meta.ordering = ["-date", "-pk"]`
-- `__str__` → `f"{self.goal.title} am {self.date:%d.%m.%Y}"`
-- `get_absolute_url()` → `reverse("core:session_detail", args=[self.pk])`
-
-Zu `duration`: `PositiveIntegerField` allein lässt die 0 zu, deshalb zusätzlich `MinValueValidator(1)`. Negative Werte fängt bereits der Feldtyp ab. Beides greift in `full_clean()` und damit auch im `ModelForm`.
-
-Die Kaskade beim Löschen eines Goals kommt aus `on_delete=models.CASCADE` — kein eigener Code nötig, aber per Test belegt.
-
-Der Besitz einer Session wird **nicht** redundant gespeichert, sondern immer über `goal__user` aufgelöst. Damit kann ein Goal und seine Sessions nicht auseinanderlaufen.
+Der Besitz wird **nicht** am Modell gespeichert, sondern immer über `goal__user` aufgelöst — identisch zur Lösung bei `LearningSession`. Die Kaskade beim Löschen eines Goals kommt aus `on_delete=models.CASCADE`.
 
 ### Migration
 
-- `python manage.py makemigrations core` erzeugt `0002_goal_learningsession.py` (zwei `CreateModel`-Operationen plus die M2M-Zwischentabelle zu `Tag`).
+- `python manage.py makemigrations core` erzeugt `0003_resource.py` (eine `CreateModel`-Operation).
 - Danach `python manage.py migrate`.
-- Keine Datenmigration: beide Tabellen sind neu, bestehende Daten aus Feature 1 bleiben unberührt.
-- Abschließend `makemigrations --check --dry-run` als Nachweis, dass Modelle und Migrationen deckungsgleich sind.
+- Keine Datenmigration: die Tabelle ist neu, bestehende Daten bleiben unberührt.
+- Abschließend `makemigrations --check --dry-run` als Nachweis der Deckungsgleichheit.
 
 ## 3. Schrittweise Umsetzung
 
-- [ ] **Schritt 1: Modelle und Migration** — `Goal` (inkl. innerer `Status`-TextChoices-Klasse) und `LearningSession` in `core/models.py` ergänzen, jeweils mit `__str__`, `get_absolute_url` und `Meta.ordering`; `MinValueValidator` importieren; `core/admin.py` um `GoalAdmin` (`list_display`, `list_filter` auf `status`) und `LearningSessionAdmin` (`list_display`, `filter_horizontal` auf `tags`) erweitern. Dann `makemigrations core` und `migrate`. Abnahme: `manage.py check` Exit-Code 0, `0002_*.py` existiert.
+- [ ] **Schritt 1: Modell und Migration** — `Resource` inkl. innerer `Type`-TextChoices-Klasse, `__str__` und `Meta.ordering` in `core/models.py` ergänzen; `core/admin.py` um `ResourceAdmin` erweitern (`list_display` mit Titel, Goal und Typ, `list_filter` auf `type`, `search_fields` auf Titel und URL). Dann `makemigrations core` und `migrate`. Abnahme: `manage.py check` Exit-Code 0, `0003_resource.py` existiert.
 
-- [ ] **Schritt 2: Scoping-Mixins** — In `core/views.py` zwei Mixins ergänzen, die das aus dem Profil-Feature bekannte Muster fortführen:
-  - `OwnGoalMixin(LoginRequiredMixin)` mit `model = Goal` und `get_queryset()` → `Goal.objects.filter(user=self.request.user)`.
-  - `OwnSessionMixin(LoginRequiredMixin)` mit `model = LearningSession` und `get_queryset()` → `LearningSession.objects.filter(goal__user=self.request.user).select_related("goal")`.
+- [ ] **Schritt 2: Formular** — `ResourceForm(ModelForm)` in `core/forms.py` mit `fields = ["url", "title", "type"]`. Das Feld `goal` ist bewusst **nicht** enthalten: Das Ziel-Goal bestimmt die View aus der URL gegen das gescopte Queryset, damit es nicht per POST überschreibbar ist. Deutsche Labels und ein `URLInput`-Widget mit Platzhalter.
+
+- [ ] **Schritt 3: Inline-Formular in der Goal-Detailseite** — `GoalDetailView.get_context_data()` legt `resource_form` in den Kontext. Damit der Fehlerfall das ausgefüllte Formular zurückgeben kann, ohne die Detailseite zu duplizieren, bekommt die View ein optionales Attribut: Ist `self.resource_form` bereits gesetzt (von der Create-View bei Validierungsfehlern), wird dieses verwendet, sonst ein frisches `ResourceForm()`. Die Ressourcen selbst kommen über `goal.resources.all` direkt aus der Beziehung.
+
+- [ ] **Schritt 4: `ResourceCreateView`** — Eine schlanke `View` mit `LoginRequiredMixin`, die ausschließlich `post()` implementiert (ein GET auf die Anlege-URL hat keinen eigenen Zweck, das Formular lebt auf der Detailseite). Ablauf:
+  1. Ziel-Goal per `get_object_or_404(Goal.objects.filter(user=request.user), pk=pk)` holen — ein fremder PK ergibt damit 404, bevor irgendetwas geschrieben wird.
+  2. `ResourceForm(request.POST)` binden; bei `is_valid()` `form.instance.goal = goal` setzen, speichern und per `redirect()` auf `goal.get_absolute_url()` zurückleiten (Status 302).
+  3. Bei Fehlern die Goal-Detailseite mit dem fehlerbehafteten Formular erneut rendern (Status 200), indem `GoalDetailView` mit gesetztem `resource_form` aufgerufen wird. Die bereits vorhandenen Ressourcen bleiben dadurch sichtbar.
   
-  Beide filtern grundsätzlich, nicht erst nach einer Berechtigungsprüfung. Ein fremder PK ist damit im Queryset schlicht nicht enthalten und führt in `get_object()` automatisch zu 404 — für Detail, Edit und Delete gleichermaßen, ohne dass eine Prüfung vergessen werden kann.
+  Weil `goal` kein Formularfeld ist und das Goal aus dem gescopten Queryset stammt, ist ein mitgeschicktes `goal=<fremde_id>` im POST wirkungslos.
 
-- [ ] **Schritt 3: Goal-CRUD und Status-Filter** — `GoalForm(ModelForm)` in `core/forms.py` mit `fields = ["title", "description", "status"]` — `user` ist bewusst **nicht** enthalten und damit nicht per POST setzbar. In `core/views.py`: `GoalListView`, `GoalDetailView`, `GoalCreateView`, `GoalUpdateView`, `GoalDeleteView`. `GoalCreateView` setzt in `form_valid()` `form.instance.user = self.request.user` und erbt nur `LoginRequiredMixin` (kein Queryset-Scoping nötig, da kein Objekt geladen wird). `GoalDeleteView.success_url = reverse_lazy("core:goal_list")`.
+- [ ] **Schritt 5: `ResourceDeleteView`** — `DeleteView` mit `LoginRequiredMixin` und `get_queryset()` → `Resource.objects.filter(goal__user=self.request.user).select_related("goal")`. Ein fremder PK ist im Queryset nicht enthalten und ergibt in `get_object()` automatisch 404 — für GET (Bestätigungsseite) wie POST (Löschen). `get_success_url()` liefert `self.object.goal.get_absolute_url()`, führt also zurück auf die Goal-Detailseite. Da Django beim Löschen `self.object` vor dem Redirect auflöst, wird das Goal in `select_related` mitgeladen.
   
-  Der Status-Filter sitzt in `GoalListView.get_queryset()`: Basis ist das gescopte Queryset des Mixins, darauf wird `status = self.request.GET.get("status")` angewandt — aber nur, wenn der Wert in `Goal.Status.values` enthalten ist. Ein unbekannter Wert wird stillschweigend ignoriert und liefert die ungefilterte eigene Liste (Status 200 statt Fehler). Der aktive Filter und die Status-Auswahl kommen über `get_context_data()` ins Template.
+  Gelöscht wird nur per POST; das bringt `DeleteView` von Haus aus mit. Eine eigene Bestätigungsseite ist nötig, weil ein GET sonst ins Leere liefe — `core/templates/core/resource_confirm_delete.html`.
 
-- [ ] **Schritt 4: LearningSession-CRUD mit Goal-Bindung** — `LearningSessionForm(ModelForm)` mit `fields = ["goal", "date", "duration", "notes", "tags"]`, `DateInput(type="date")` als Widget für `date` und `CheckboxSelectMultiple` für `tags`. Entscheidend: Der Form nimmt im `__init__` einen `user` entgegen und setzt `self.fields["goal"].queryset = Goal.objects.filter(user=user)`. Damit stehen nur eigene Goals zur Auswahl **und** ein POST mit fremder Goal-ID wird serverseitig als ungültige Auswahl abgewiesen (Status 200 mit Formularfehler, keine Session) — die Einschränkung ist also nicht bloß kosmetisch im Dropdown.
+- [ ] **Schritt 6: URLs** — `core/urls.py` um zwei Routen erweitern:
+  - `goals/<int:pk>/resources/add/` → `ResourceCreateView`, Name `resource_create` (der PK adressiert das **Goal**).
+  - `resources/<int:pk>/delete/` → `ResourceDeleteView`, Name `resource_delete` (der PK adressiert die **Resource**).
+
+- [ ] **Schritt 7: Templates** — `goal_detail.html` bekommt einen Abschnitt "Ressourcen", der das Teil-Template `_resource_list.html` einbindet, sowie darunter das Inline-Formular (POST auf `core:resource_create` mit `{% csrf_token %}`, sichtbare `{{ resource_form.errors }}`). `_resource_list.html` rendert je Ressource: Titel als Link auf `resource.url` (mit `rel="noopener noreferrer"` und `target="_blank"`), ein `<span class="badge badge-{{ resource.type }}">{{ resource.get_type_display }}</span>` sowie ein POST-Formular mit Lösch-Button. Bei leerer Liste ein Hinweistext. In `base.html` kommt ein kleiner `<style>`-Block mit den vier `badge-*`-Klassen (unterschiedliche Hintergrundfarben) — bewusst minimal, kein CSS-Framework.
   
-  Die fünf Views (`SessionListView`, `SessionDetailView`, `SessionCreateView`, `SessionUpdateView`, `SessionDeleteView`) reichen den User über `get_form_kwargs()` an den Form durch. `SessionCreateView` erbt nur `LoginRequiredMixin`; die Zuordnung entsteht implizit über das gewählte Goal.
+  Zur Badge-Klasse: Sie wird direkt aus `resource.type` gebildet, das Label separat über `get_type_display`. Damit erfüllt ein Template beide Kriterien (technische Klasse für die Optik, lesbares Label für den Text), ohne eine Zuordnungstabelle im Template zu pflegen.
 
-- [ ] **Schritt 5: URLs** — `core/urls.py` um zehn Routen erweitern: `/goals/`, `/goals/new/`, `/goals/<int:pk>/`, `/goals/<int:pk>/edit/`, `/goals/<int:pk>/delete/` sowie analog unter `/sessions/`. Die statischen Segmente (`new`) stehen vor den `<int:pk>`-Routen; eine Kollision ist durch den `int`-Converter ohnehin ausgeschlossen. Namen: `goal_list`, `goal_create`, `goal_detail`, `goal_edit`, `goal_delete` und `session_*` analog.
+- [ ] **Schritt 8: Tests** — Die beiden neuen Testmodule gemäß Abschnitt 4 schreiben.
 
-- [ ] **Schritt 6: Templates** — Die acht neuen Templates erweitern `base.html`. `goal_list.html` enthält das Filter-Formular (GET, `<select name="status">` mit den Choices plus Option "Alle") und markiert den aktiven Filter; `goal_detail.html` listet die zugehörigen Sessions über `goal.sessions.all` und verlinkt Edit/Delete. Die beiden `*_confirm_delete.html` sind POST-Formulare mit `{% csrf_token %}` — kein Löschen per GET. `base.html` und `home.html` bekommen Navigationslinks für eingeloggte Nutzer. Formular-Templates zeigen `{{ form.errors }}` sichtbar an.
-
-- [ ] **Schritt 7: Tests** — Die drei neuen Testmodule gemäß Abschnitt 4 schreiben.
-
-- [ ] **Schritt 8: Gesamtvalidierung** — `manage.py check`, `makemigrations --check --dry-run`, `manage.py test` (bestehende 17 plus neue Tests) und `.\.workflow\hooks\validate_code.ps1` ausführen; alles mit Exit-Code 0.
+- [ ] **Schritt 9: Gesamtvalidierung** — `manage.py check`, `makemigrations --check --dry-run`, `manage.py test` (63 bestehende plus neue) und `.\.workflow\hooks\validate_code.ps1`; alles mit Exit-Code 0.
 
 ## 4. Validierung & Test-Strategie
 
-### `core/tests/test_goals.py`
+### `core/tests/test_resources.py`
 
 Modell:
 
-- `test_goal_str_returns_title`
-- `test_goal_default_status_is_planned` — ein ohne `status` angelegtes Goal hat `planned`.
-- `test_invalid_status_rejected_by_full_clean` — `status="unsinn"` → `ValidationError` aus `full_clean()`.
+- `test_resource_str_returns_title`
+- `test_default_type_is_article` — ohne `type` angelegt → `article`.
+- `test_all_four_types_are_valid` — `full_clean()` wirft für keinen der vier Werte.
+- `test_invalid_type_rejected_by_full_clean` — `type="podcast"` → `ValidationError` mit Schlüssel `type`.
+- `test_invalid_url_rejected_by_full_clean` — `url="kein-link"` → `ValidationError` mit Schlüssel `url`.
+- `test_deleting_goal_cascades_to_resources` — nach `goal.delete()` ist `Resource.objects.filter(goal_id=alte_id).count() == 0`.
 
-CRUD:
+Inline-Anlegen:
 
-- `test_goal_list_shows_only_own_goals` — A sieht sein Goal, nicht das von B; geprüft über `response.context["object_list"]` **und** `assertNotContains` auf den Titel von B.
-- `test_goal_create_assigns_current_user` — POST auf `/goals/new/` → Goal gehört A.
-- `test_goal_create_ignores_user_field_in_post` — POST mit zusätzlichem `user=<pk_von_B>` → das Goal gehört trotzdem A (belegt, dass `user` nicht per Form setzbar ist).
-- `test_goal_detail_shows_own_goal` — 200 mit Titel.
-- `test_goal_update_persists` — POST auf Edit, danach `refresh_from_db()`; Titel und Status aktualisiert.
-- `test_goal_delete_removes_goal` — POST auf Delete → Redirect, `Goal.objects.filter(pk=...).exists()` ist `False`.
-- `test_goal_delete_requires_post` — GET auf die Delete-URL liefert 200 (Bestätigungsseite) und löscht **nicht**.
+- `test_goal_detail_contains_resource_form` — die Detailseite liefert `resource_form` im Kontext und enthält ein `csrfmiddlewaretoken`.
+- `test_create_resource_redirects_to_goal_detail` — gültiger POST → 302 auf die Goal-Detailseite, Ressource am richtigen Goal.
+- `test_create_resource_appears_on_detail_page` — nach dem Anlegen ist der Titel auf der Detailseite sichtbar.
+- `test_create_resource_with_invalid_url_shows_errors` — Status 200, `"url"` in den Formularfehlern, `Resource.objects.count()` unverändert.
+- `test_create_resource_with_empty_title_shows_errors` — Status 200, `"title"` in den Fehlern, nichts angelegt.
+- `test_invalid_post_keeps_existing_resources_visible` — ein fehlerhafter POST darf die bereits vorhandenen Ressourcen auf der Seite nicht verschwinden lassen.
+- `test_goal_field_in_post_is_ignored` — POST mit zusätzlichem `goal=<pk_eines_anderen_eigenen_goals>` → die Ressource hängt am Goal aus der URL.
 
-Status-Filter:
+Anzeige und Badge:
 
-- `test_filter_by_status_planned` / `test_filter_by_status_in_progress` / `test_filter_by_status_done` — je nur die passenden eigenen Goals.
-- `test_no_filter_returns_all_own_goals`
-- `test_invalid_status_value_returns_all` — `?status=unsinn` → Status 200 und alle eigenen Goals.
-- `test_filter_does_not_leak_foreign_goals` — B hat ein Goal mit `done`; A ruft `?status=done` auf und sieht es nicht.
+- `test_resource_badge_class_matches_type` — für jeden der vier Typen (`subTest`) prüfen, dass `badge-<type>` im HTML vorkommt.
+- `test_resource_type_label_is_human_readable` — `"Repository"` erscheint, nicht `"repo"`.
+- `test_empty_resource_list_shows_hint` — Goal ohne Ressourcen → Hinweistext, kein leeres Listengerüst.
 
-### `core/tests/test_sessions.py`
+Löschen:
 
-Modell:
+- `test_delete_resource_removes_it_and_redirects` — POST → Redirect auf die Goal-Detailseite, Datensatz weg.
+- `test_delete_resource_keeps_goal` — das Goal existiert nach dem Löschen der Ressource weiterhin.
+- `test_delete_requires_post` — GET auf die Lösch-URL liefert 200 (Bestätigung) und löscht nicht.
 
-- `test_session_str_is_human_readable` — enthält Goal-Titel und Datum.
-- `test_duration_zero_rejected` und `test_duration_negative_rejected` — `full_clean()` wirft `ValidationError`.
-- `test_duration_positive_accepted`
-- `test_deleting_goal_cascades_to_sessions` — nach `goal.delete()` gilt `LearningSession.objects.filter(goal_id=alte_id).count() == 0`.
+### `core/tests/test_resource_scoping.py`
 
-CRUD und Goal-Bindung:
-
-- `test_session_list_shows_only_own_sessions` — gefiltert über `goal__user`.
-- `test_session_create_with_own_goal` — Session wird angelegt, Redirect.
-- `test_session_form_only_offers_own_goals` — das `goal`-Queryset des Formulars enthält A's Goal, nicht B's.
-- `test_session_create_with_foreign_goal_rejected` — POST mit `goal=<pk_von_B>` → Status 200, `"goal"` in `form.errors`, `LearningSession.objects.count()` unverändert.
-- `test_session_detail_update_delete` — Detail 200, Update persistiert, Delete entfernt den Datensatz.
-- `test_session_tags_are_saved` — ausgewählte `Tag`-IDs landen an der Session.
-
-### `core/tests/test_scoping.py`
-
-Der Kern des Tickets. Zwei Nutzer A und B, jeder mit einem Goal und einer Session.
+Zwei Nutzer A und B, je ein Goal mit je einer Ressource.
 
 Anonymer Zugriff:
 
-- `test_all_goal_views_require_login` und `test_all_session_views_require_login` — je eine Schleife über alle fünf URLs, jeweils `assertRedirects` auf `/accounts/login/?next=...`. Damit ist das Kriterium "alle zehn Views" vollständig und nicht nur stichprobenartig abgedeckt.
+- `test_resource_create_requires_login` — POST ohne Login → `assertRedirects` auf `/accounts/login/?next=...`.
+- `test_resource_delete_requires_login` — analog.
 
-Fremdzugriff Goal:
+Fremdzugriff:
 
-- `test_foreign_goal_detail_returns_404`
-- `test_foreign_goal_edit_get_returns_404`
-- `test_foreign_goal_edit_post_does_not_change_data` — nach dem abgewiesenen POST per `refresh_from_db()` prüfen, dass Titel und Status von B unverändert sind.
-- `test_foreign_goal_delete_post_does_not_delete` — Status 404 und `Goal.objects.filter(pk=b.pk).exists()` ist weiterhin `True`.
-
-Fremdzugriff LearningSession (dieselben vier Fälle, separat getestet):
-
-- `test_foreign_session_detail_returns_404`
-- `test_foreign_session_edit_get_returns_404`
-- `test_foreign_session_edit_post_does_not_change_data`
-- `test_foreign_session_delete_post_does_not_delete`
+- `test_cannot_add_resource_to_foreign_goal` — A postet auf die Anlege-URL von B's Goal → Status 404 **und** `Resource.objects.count()` unverändert. Beides zusammen, weil ein 404 allein nicht belegt, dass nichts geschrieben wurde.
+- `test_cannot_delete_foreign_resource` — A postet auf die Lösch-URL von B's Ressource → 404, und `Resource.objects.filter(pk=b_resource.pk).exists()` ist weiterhin `True`.
+- `test_cannot_get_delete_page_of_foreign_resource` — GET auf dieselbe URL → 404, Titel von B nicht in der Response.
+- `test_foreign_goal_detail_still_404` — A ruft B's Goal-Detailseite auf → 404; die Ressource von B wird nicht ausgegeben.
+- `test_foreign_resources_not_on_own_goal_detail` — auf A's eigener Detailseite taucht B's Ressourcentitel nicht auf.
 
 Gegenprobe:
 
-- `test_own_goal_and_session_remain_accessible` — stellt sicher, dass das Scoping nicht einfach alles sperrt und die 404-Tests dadurch trivial erfüllt wären.
+- `test_own_resource_create_and_delete_work` — A legt am eigenen Goal an und löscht wieder; beides erfolgreich. Ohne diesen Test wären die 404-Kriterien auch durch eine global kaputte View erfüllt.
 
 ### Testdaten
 
-- `setUpTestData` legt je Testklasse zwei Nutzer, deren Goals in unterschiedlichen Status und je eine Session an; Profile entstehen weiterhin automatisch per Signal.
-- `Tag`-Instanzen werden für die Session-Tests direkt angelegt. Keine Fixture-Dateien, keine neuen Abhängigkeiten.
+- `setUpTestData` legt je Testklasse die nötigen Nutzer, Goals und Ressourcen an; Profile entstehen weiterhin automatisch per Signal.
+- URLs in Testdaten sind valide (`https://example.com/...`), ungültige Werte nur dort, wo gezielt die Validierung geprüft wird.
+- Keine Fixture-Dateien, keine neuen Abhängigkeiten.
 
 ### Auszuführende Kommandos
 
@@ -206,4 +161,4 @@ python manage.py test
 
 ### Definition of Done
 
-Alle vier Kommandos enden mit Exit-Code 0, die 17 Tests aus Feature 1 laufen unverändert mit durch, `core/migrations/0002_goal_learningsession.py` ist eingecheckt, und jedes der 28 Akzeptanzkriterien aus `.workflow/artifacts/ticket.md` ist durch mindestens einen benannten Test oder einen Kommando-Exit-Code belegt.
+Alle vier Kommandos enden mit Exit-Code 0, die 63 Tests aus Feature 1 und 2 laufen unverändert mit durch, `core/migrations/0003_resource.py` ist eingecheckt, und jedes der 25 Akzeptanzkriterien aus `.workflow/artifacts/ticket.md` ist durch mindestens einen benannten Test oder einen Kommando-Exit-Code belegt.

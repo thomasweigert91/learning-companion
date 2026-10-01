@@ -4,6 +4,20 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Learning Companion{% endblock %}</title>
+    <style>
+        /* Minimale Typ-Badges fuer Ressourcen -- bewusst ohne CSS-Framework. */
+        .badge {
+            display: inline-block;
+            padding: 0.1em 0.5em;
+            border-radius: 0.8em;
+            font-size: 0.8em;
+            color: #fff;
+        }
+        .badge-article { background: #2b6cb0; }
+        .badge-video   { background: #c53030; }
+        .badge-repo    { background: #2f855a; }
+        .badge-doc     { background: #6b46c1; }
+    </style>
 </head>
 <body>
 <header>

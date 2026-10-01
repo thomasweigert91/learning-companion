@@ -33,4 +33,15 @@ urlpatterns = [
     path("sessions/<int:pk>/", views.SessionDetailView.as_view(), name="session_detail"),
     path("sessions/<int:pk>/edit/", views.SessionUpdateView.as_view(), name="session_edit"),
     path("sessions/<int:pk>/delete/", views.SessionDeleteView.as_view(), name="session_delete"),
+    # Ressourcen (pk adressiert beim Anlegen das Goal, beim Loeschen die Resource)
+    path(
+        "goals/<int:pk>/resources/add/",
+        views.ResourceCreateView.as_view(),
+        name="resource_create",
+    ),
+    path(
+        "resources/<int:pk>/delete/",
+        views.ResourceDeleteView.as_view(),
+        name="resource_delete",
+    ),
 ]

@@ -1,0 +1,17 @@
+{# Erwartet "goal" im Kontext. Badge-Klasse aus resource.type, Label aus get_type_display. #}
+{% if goal.resources.all %}
+    <ul class="resource-list">
+        {% for resource in goal.resources.all %}
+            <li>
+                <span class="badge badge-{{ resource.type }}">{{ resource.get_type_display }}</span>
+                <a href="{{ resource.url }}" target="_blank" rel="noopener noreferrer">{{ resource.title }}</a>
+                <form action="{% url 'core:resource_delete' resource.pk %}" method="post">
+                    {% csrf_token %}
+                    <button type="submit">Entfernen</button>
+                </form>
+            </li>
+        {% endfor %}
+    </ul>
+{% else %}
+    <p>Noch keine Ressourcen zu diesem Lernziel.</p>
+{% endif %}

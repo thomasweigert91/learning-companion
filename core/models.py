@@ -108,3 +108,35 @@ class LearningSession(models.Model):
 
     def get_absolute_url(self):
         return reverse("core:session_detail", args=[self.pk])
+
+
+class Resource(models.Model):
+    """Eine Lernressource (Link) zu genau einem Goal.
+
+    Wie bei LearningSession wird der Besitzer nicht redundant gespeichert,
+    sondern immer ueber goal__user aufgeloest.
+    """
+
+    class Type(models.TextChoices):
+        ARTICLE = "article", "Artikel"
+        VIDEO = "video", "Video"
+        REPO = "repo", "Repository"
+        DOC = "doc", "Dokumentation"
+
+    goal = models.ForeignKey(Goal, on_delete=models.CASCADE, related_name="resources")
+    # 500 statt der Default-200: Doku- und Repo-Links mit Ankern und
+    # Query-Parametern werden schnell laenger.
+    url = models.URLField(max_length=500)
+    title = models.CharField(max_length=200)
+    type = models.CharField(
+        max_length=20,
+        choices=Type.choices,
+        default=Type.ARTICLE,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+
+    def __str__(self):
+        return self.title
