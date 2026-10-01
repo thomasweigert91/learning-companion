@@ -121,23 +121,26 @@
 
         {# --- KI-Unterstuetzung ---------------------------------------------- #}
         <div class="col-lg-4">
-            <section class="card border-0 shadow-sm" aria-labelledby="titel-ki">
+            <section class="card border-0 shadow-sm" aria-labelledby="titel-ki" id="ki-karte"
+                     data-freigabe-ms="{{ ki_freigabe_ms }}">
                 <div class="card-header bg-body py-3">
                     <h2 class="h5 mb-0" id="titel-ki"><i class="bi bi-stars me-2 text-warning" aria-hidden="true"></i>KI-Unterstuetzung</h2>
                 </div>
                 <div class="card-body d-grid gap-2">
-                    <form action="{% url 'core:goal_ai_summary' goal.pk %}" method="post" class="d-grid">
+                    <form action="{% url 'core:goal_ai_summary' goal.pk %}" method="post" class="d-grid" data-ki-aktion>
                         {% csrf_token %}
-                        <button type="submit" class="btn btn-outline-primary">
+                        <button type="submit" class="btn btn-outline-primary" data-ladetext="Generiere Zusammenfassung...">
                             <i class="bi bi-card-text me-1" aria-hidden="true"></i>Zusammenfassung generieren
                         </button>
                     </form>
-                    <form action="{% url 'core:goal_ai_next_steps' goal.pk %}" method="post" class="d-grid">
+                    <form action="{% url 'core:goal_ai_next_steps' goal.pk %}" method="post" class="d-grid" data-ki-aktion>
                         {% csrf_token %}
-                        <button type="submit" class="btn btn-outline-primary">
+                        <button type="submit" class="btn btn-outline-primary" data-ladetext="Ermittle nächste Schritte...">
                             <i class="bi bi-signpost-2 me-1" aria-hidden="true"></i>Naechste Schritte vorschlagen
                         </button>
                     </form>
+                    {# Dauerhaft vorhandene Live-Region: Screenreader sagen Textaenderungen nur hier an, nicht am Button. #}
+                    <p class="visually-hidden" role="status" id="ki-status"></p>
                 </div>
 
                 {# Neuestes Ergebnis je Typ; erscheint erst nach der ersten Nutzung. Der komplette Verlauf steht unter #ki-verlauf. #}
@@ -173,4 +176,84 @@
             </section>
         </div>
     </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Ladezustand der beiden KI-Aktionen. Ohne JavaScript funktionieren die
+    // Formulare unveraendert -- das Script ergaenzt nur Rueckmeldung und
+    // Doppelklick-Schutz.
+    (() => {
+        "use strict";
+
+        const karte = document.getElementById("ki-karte");
+        const formulare = document.querySelectorAll("form[data-ki-aktion]");
+        if (!karte || !formulare.length) return;
+
+        const status = document.getElementById("ki-status");
+        const alleButtons = () => karte.querySelectorAll("form[data-ki-aktion] button[type=submit]");
+        // Laenger als der schlimmste Fall auf dem Server (Timeout x Versuche)
+        // darf der Request nicht dauern. Erst danach wird wieder freigegeben --
+        // vorher liefe der erste Request womoeglich noch.
+        const freigabeMs = Number(karte.dataset.freigabeMs) || 60000;
+
+        let laeuft = false;
+        let notfallTimer = null;
+
+        function zuruecksetzen() {
+            laeuft = false;
+            clearTimeout(notfallTimer);
+            alleButtons().forEach((button) => {
+                button.disabled = false;
+                if (button.dataset.original !== undefined) {
+                    button.innerHTML = button.dataset.original;
+                    delete button.dataset.original;
+                }
+            });
+            if (status) status.textContent = "";
+        }
+
+        formulare.forEach((form) => {
+            form.addEventListener("submit", (event) => {
+                // Zweiter Submit (Doppelklick, Enter) waehrend der erste laeuft.
+                if (laeuft) {
+                    event.preventDefault();
+                    return;
+                }
+                // Hat ein anderer Handler den Submit abgebrochen, findet kein
+                // Request statt -- dann bleibt die Oberflaeche unangetastet.
+                if (event.defaultPrevented) return;
+
+                const button = form.querySelector("button[type=submit]");
+                if (!button) return;
+                laeuft = true;
+
+                // Beide Buttons sperren, damit keine parallelen Requests entstehen.
+                // Die Buttons tragen kein name-Attribut; das Sperren im
+                // submit-Handler aendert die gesendeten Daten also nicht.
+                alleButtons().forEach((b) => { b.disabled = true; });
+
+                const ladetext = button.dataset.ladetext;
+                button.dataset.original = button.innerHTML;
+                const spinner = document.createElement("span");
+                spinner.className = "spinner-border spinner-border-sm me-2";
+                spinner.setAttribute("role", "status");
+                spinner.setAttribute("aria-hidden", "true");
+                button.replaceChildren(spinner, document.createTextNode(" " + ladetext));
+
+                if (status) status.textContent = ladetext;
+
+                // Sicherheitsnetz, falls die Navigation ausbleibt (z. B. Abbruch
+                // ueber den Stopp-Button des Browsers).
+                notfallTimer = setTimeout(zuruecksetzen, freigabeMs);
+            });
+        });
+
+        // Zurueck-Button: der Browser stellt die Seite aus dem bfcache wieder
+        // her -- mitsamt gesperrten Buttons. Dann freigeben.
+        window.addEventListener("pageshow", (event) => {
+            if (event.persisted) zuruecksetzen();
+        });
+    })();
+</script>
 {% endblock %}

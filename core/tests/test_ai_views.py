@@ -1,4 +1,5 @@
 import datetime
+import re
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -6,6 +7,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from core.models import AIFeedback, Goal, LearningSession, Resource
+from core.services import ai_service
 from core.services.ai_service import AIServiceError
 
 User = get_user_model()
@@ -245,3 +247,54 @@ class ScopingTests(AIViewTestCase):
             AIFeedback.objects.filter(goal=self.goal_a, feedback_type="next_steps").count(),
             1,
         )
+
+
+@override_settings(AI_MOCK_MODE=True, OPENAI_API_KEY="", OPENAI_TIMEOUT_SECONDS=20)
+class LadezustandTests(AIViewTestCase):
+    """Markup-Vertrag fuer das Ladezustands-Script der Detailseite.
+
+    Das Verhalten selbst laeuft im Browser; hier wird gesichert, dass alles
+    vorhanden ist, worauf das Script zugreift.
+    """
+
+    def setUp(self):
+        self.client.force_login(self.user_a)
+        self.html = self.client.get(
+            reverse("core:goal_detail", args=[self.goal_a.pk])
+        ).content.decode()
+
+    def test_beide_formulare_markiert_mit_ladetext(self):
+        formulare = re.findall(r"<form [^>]*data-ki-aktion>", self.html)
+        self.assertEqual(len(formulare), 2)
+        self.assertIn('data-ladetext="Generiere Zusammenfassung..."', self.html)
+        self.assertIn('data-ladetext="Ermittle nächste Schritte..."', self.html)
+
+    def test_live_region_fuer_screenreader(self):
+        self.assertIn('<p class="visually-hidden" role="status" id="ki-status"></p>', self.html)
+
+    def test_freigabefrist_aus_timeout_und_wiederholungen(self):
+        # 20 s x 2 Versuche + 10 s Wartezeit fuer die eine Wiederholung.
+        self.assertIn('data-freigabe-ms="50000"', self.html)
+
+    def test_script_mit_spinner_und_doppelklick_schutz(self):
+        script = self.html[self.html.index("Ladezustand der beiden KI-Aktionen") :]
+        self.assertIn('"spinner-border spinner-border-sm me-2"', script)
+        self.assertIn('setAttribute("aria-hidden", "true")', script)
+        self.assertIn("event.preventDefault()", script)
+        self.assertIn("pageshow", script)
+        # Das Script steht nach dem Bootstrap-Bundle.
+        self.assertLess(
+            self.html.index("bootstrap.bundle.min.js"),
+            self.html.index("Ladezustand der beiden"),
+        )
+
+    def test_script_nur_auf_der_detailseite(self):
+        liste = self.client.get(reverse("core:goal_list")).content.decode()
+        self.assertNotIn("data-ki-aktion", liste)
+        self.assertNotIn("Ladezustand der beiden KI-Aktionen", liste)
+
+
+class MaxRequestSecondsTests(TestCase):
+    @override_settings(OPENAI_TIMEOUT_SECONDS=5)
+    def test_frist_folgt_dem_timeout(self):
+        self.assertEqual(ai_service.max_request_seconds(), 5 * 2 + 10)

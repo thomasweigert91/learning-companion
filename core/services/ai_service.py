@@ -23,9 +23,23 @@ MAX_RESOURCES = 20
 MIN_STEPS = 2
 MAX_STEPS = 3
 
+# Ein Rate-Limit soll nicht zu langen Wartezeiten im Request fuehren.
+MAX_RETRIES = 1
+
 
 class AIServiceError(Exception):
     """Die einzige Exception, die diesen Service verlaesst."""
+
+
+def max_request_seconds():
+    """Obergrenze, wie lange ein KI-Request im schlimmsten Fall dauern kann.
+
+    Jeder Versuch darf das Timeout ausschoepfen, dazu kommt die Wartezeit des
+    SDK zwischen den Versuchen (grosszuegig mit 10 s pro Wiederholung). Die
+    Detailseite gibt gesperrte KI-Buttons erst nach dieser Frist wieder frei --
+    vorher liefe der erste Request womoeglich noch.
+    """
+    return settings.OPENAI_TIMEOUT_SECONDS * (MAX_RETRIES + 1) + 10 * MAX_RETRIES
 
 
 def is_mock_mode():
@@ -102,8 +116,7 @@ def _call_openai(prompt):
     client = OpenAI(
         api_key=settings.OPENAI_API_KEY,
         timeout=settings.OPENAI_TIMEOUT_SECONDS,
-        # Ein Rate-Limit soll nicht zu langen Wartezeiten im Request fuehren.
-        max_retries=1,
+        max_retries=MAX_RETRIES,
     )
 
     try:

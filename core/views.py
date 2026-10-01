@@ -138,6 +138,9 @@ class GoalDetailView(OwnGoalMixin, DetailView):
         feedbacks = list(self.object.ai_feedbacks.all())
         context["ai_feedbacks"] = feedbacks
 
+        # Frist fuer das Sicherheitsnetz des Ladezustands (siehe goal_detail.html).
+        context["ki_freigabe_ms"] = int(ai_service.max_request_seconds() * 1000)
+
         # Neuestes Ergebnis je Typ fuer die KI-Card: aus der schon geladenen,
         # absteigend sortierten Liste statt mit zwei weiteren Abfragen. Gesetzt
         # wird nur, was existiert -- die Card blendet leere Bloecke aus.
