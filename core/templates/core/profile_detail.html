@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}Profil &ndash; Learning Companion{% endblock %}
+
+{% block content %}
+    <h1>Mein Profil</h1>
+
+    <dl>
+        <dt>Name</dt>
+        <dd>{{ profile.name|default:"(noch nicht gesetzt)" }}</dd>
+
+        <dt>Cohort</dt>
+        <dd>{{ profile.cohort|default:"(noch nicht gesetzt)" }}</dd>
+
+        <dt>Focus Areas</dt>
+        <dd>
+            {% if profile.focus_areas.all %}
+                <ul>
+                    {% for tag in profile.focus_areas.all %}
+                        <li>{{ tag.name }}</li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                (noch keine ausgewaehlt)
+            {% endif %}
+        </dd>
+    </dl>
+
+    <a href="{% url 'core:profile_edit' %}">Profil bearbeiten</a>
+{% endblock %}

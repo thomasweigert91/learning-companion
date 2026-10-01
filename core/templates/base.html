@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Learning Companion{% endblock %}</title>
+</head>
+<body>
+<header>
+    <nav>
+        <a href="{% url 'core:home' %}">Learning Companion</a>
+        {% if user.is_authenticated %}
+            <a href="{% url 'core:profile_detail' %}">Mein Profil</a>
+            <span>Angemeldet als {{ user.get_username }}</span>
+            {# Django 5: Logout erfordert einen POST. #}
+            <form action="{% url 'core:logout' %}" method="post">
+                {% csrf_token %}
+                <button type="submit">Logout</button>
+            </form>
+        {% else %}
+            <a href="{% url 'core:login' %}">Login</a>
+            <a href="{% url 'core:register' %}">Registrieren</a>
+        {% endif %}
+    </nav>
+</header>
+
+<main>
+    {% block content %}{% endblock %}
+</main>
+</body>
+</html>

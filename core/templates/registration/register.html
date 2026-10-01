@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}Registrieren &ndash; Learning Companion{% endblock %}
+
+{% block content %}
+    <h1>Registrieren</h1>
+
+    {% if form.errors %}
+        <div class="errors">
+            <p>Bitte korrigiere die folgenden Eingaben:</p>
+            {{ form.errors }}
+        </div>
+    {% endif %}
+
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Konto anlegen</button>
+    </form>
+
+    <p>Bereits registriert? <a href="{% url 'core:login' %}">Zum Login</a></p>
+{% endblock %}

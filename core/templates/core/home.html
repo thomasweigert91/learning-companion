@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block title %}Startseite &ndash; Learning Companion{% endblock %}
+
+{% block content %}
+    <h1>Learning Companion</h1>
+    {% if user.is_authenticated %}
+        <p>Willkommen zurueck. <a href="{% url 'core:profile_detail' %}">Zu deinem Profil</a></p>
+    {% else %}
+        <p>
+            Bitte <a href="{% url 'core:login' %}">anmelden</a> oder
+            <a href="{% url 'core:register' %}">registrieren</a>.
+        </p>
+    {% endif %}
+{% endblock %}
