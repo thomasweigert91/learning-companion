@@ -165,8 +165,8 @@
     {% if messages %}
         <div class="messages">
             {% for message in messages %}
-                {# Meldungen des KI-Verlaufs zeigt der Abschnitt #ki-verlauf selbst (core/_ai_timeline.html). #}
-                {% if "ki-verlauf" not in message.extra_tags %}
+                {# Meldungen mit dem Tag "abschnitt" zeigt der jeweilige Abschnitt selbst (core/_abschnitt_meldungen.html). #}
+                {% if "abschnitt" not in message.extra_tags.split %}
                 <div class="alert alert-{% if message.level_tag == 'error' %}danger{% elif message.level_tag == 'debug' %}secondary{% else %}{{ message.level_tag }}{% endif %} alert-dismissible fade show"
                      role="{% if message.level_tag == 'error' %}alert{% else %}status{% endif %}">
                     {{ message }}

@@ -1,0 +1,10 @@
+{# Meldungen, die ein Abschnitt selbst anzeigt statt base.html. Erwartet "bereich" (z. B. "lernkarten"); passend sind Meldungen mit extra_tags "abschnitt <bereich>". #}
+{% for message in messages %}
+    {% if bereich in message.extra_tags.split %}
+        <div class="alert alert-{% if message.level_tag == 'error' %}danger{% else %}{{ message.level_tag }}{% endif %} alert-dismissible fade show py-2"
+             role="{% if message.level_tag == 'error' %}alert{% else %}status{% endif %}">
+            <i class="bi bi-{% if message.level_tag == 'error' %}exclamation-triangle{% else %}check-circle{% endif %} me-1" aria-hidden="true"></i>{{ message }}
+            <button type="button" class="btn-close py-2" data-bs-dismiss="alert" aria-label="Meldung schliessen"></button>
+        </div>
+    {% endif %}
+{% endfor %}

@@ -5,6 +5,7 @@ Templates rufen ausschliesslich die beiden oeffentlichen Funktionen auf und
 sehen nur AIServiceError -- nie einen SDK-Fehlertyp.
 """
 
+import json
 import logging
 
 from django.conf import settings
@@ -25,6 +26,44 @@ MAX_STEPS = 3
 
 # Ein Rate-Limit soll nicht zu langen Wartezeiten im Request fuehren.
 MAX_RETRIES = 1
+
+# Lernkarten: Anzahl pro Aufruf, im Code durchgesetzt. Vorhandene Fragen gehen
+# gedeckelt in den Prompt, damit die KI keine Duplikate erzeugt.
+MIN_FLASHCARDS = 3
+MAX_FLASHCARDS = 5
+MAX_EXISTING_QUESTIONS = 30
+
+# Structured Output im Strict-Modus: required fuer alle Felder und
+# additionalProperties: false auf jeder Objektebene. minItems/maxItems stehen
+# bewusst nicht im Schema -- die Anzahl setzt _parse_flashcards durch, und ein
+# im Strict-Modus nicht unterstuetztes Schluesselwort liesse jede Anfrage mit
+# einem Schemafehler scheitern.
+FLASHCARD_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "lernkarten",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "cards": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {"type": "string"},
+                            "answer": {"type": "string"},
+                        },
+                        "required": ["question", "answer"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["cards"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 class AIServiceError(Exception):
@@ -108,23 +147,123 @@ def _build_next_steps_prompt(goal):
     )
 
 
+def _build_flashcards_prompt(goal, vorhandene_fragen):
+    prompt = (
+        f"Erstelle {MIN_FLASHCARDS} bis {MAX_FLASHCARDS} Lernkarten zu folgendem "
+        "Lernziel. Jede Karte besteht aus einer Frage und einer knappen Antwort. "
+        "Die Fragen sollen pruefen, ob die Inhalte aus den Notizen und "
+        "Ressourcen verstanden wurden, und muessen sich aus diesem Kontext "
+        "beantworten lassen. Antworte auf Deutsch.\n\n"
+        f"{_format_context(goal)}"
+    )
+    if vorhandene_fragen:
+        prompt += "\n\nDiese Fragen existieren bereits, erzeuge sie nicht erneut:\n"
+        prompt += "\n".join(f"- {frage}" for frage in vorhandene_fragen)
+    return prompt
+
+
+def _frage_schluessel(frage):
+    """Vergleichsschluessel fuer Duplikate: ohne Raender, ohne Gross-/Kleinschreibung."""
+    return frage.strip().casefold()
+
+
+def _ohne_duplikate(karten, vorhandene_fragen):
+    """Verwirft Karten, deren Frage schon vorkommt -- in der Liste oder im Bestand."""
+    gesehen = {_frage_schluessel(frage) for frage in vorhandene_fragen}
+    eindeutig = []
+    for karte in karten:
+        schluessel = _frage_schluessel(karte["question"])
+        if schluessel in gesehen:
+            continue
+        gesehen.add(schluessel)
+        eindeutig.append(karte)
+    return eindeutig
+
+
+def _parse_flashcards(rohtext, vorhandene_fragen=()):
+    """Validiert die JSON-Antwort und liefert 3 bis 5 bereinigte Karten.
+
+    Jeder Fehlerfall wird protokolliert und endet in AIServiceError -- nie in
+    einer halben Kartenliste oder einem 500er.
+    """
+    unverwertbar = (
+        "Die KI hat keine verwertbaren Lernkarten geliefert. "
+        "Bitte versuche es erneut."
+    )
+
+    try:
+        daten = json.loads(rohtext)
+    except json.JSONDecodeError:
+        logger.warning("Lernkarten-Antwort ist kein gueltiges JSON")
+        raise AIServiceError(unverwertbar) from None
+
+    karten_roh = daten.get("cards") if isinstance(daten, dict) else None
+    if not isinstance(karten_roh, list):
+        logger.warning("Lernkarten-Antwort hat nicht die erwartete Struktur")
+        raise AIServiceError(unverwertbar)
+
+    karten = []
+    for eintrag in karten_roh:
+        if not isinstance(eintrag, dict):
+            continue
+        frage, antwort = eintrag.get("question"), eintrag.get("answer")
+        if not (isinstance(frage, str) and isinstance(antwort, str)):
+            continue
+        frage, antwort = frage.strip(), antwort.strip()
+        if frage and antwort:
+            karten.append({"question": frage, "answer": antwort})
+    karten = _ohne_duplikate(karten, vorhandene_fragen)
+
+    if len(karten) < MIN_FLASHCARDS:
+        logger.warning(
+            "Nur %s verwertbare Lernkarten in der Antwort (mindestens %s)",
+            len(karten),
+            MIN_FLASHCARDS,
+        )
+        raise AIServiceError(unverwertbar)
+
+    return karten[:MAX_FLASHCARDS]
+
+
 # --- SDK-Kontakt ------------------------------------------------------------
 
 
-def _call_openai(prompt):
-    """Einziger Kontaktpunkt zum SDK. Uebersetzt alle Fehler in AIServiceError."""
+def _call_openai(prompt, response_format=None):
+    """Einziger Kontaktpunkt zum SDK. Uebersetzt alle Fehler in AIServiceError.
+
+    response_format wird nur durchgereicht, wenn gesetzt -- die Text-Aufrufe
+    bleiben damit unveraendert.
+    """
     client = OpenAI(
         api_key=settings.OPENAI_API_KEY,
         timeout=settings.OPENAI_TIMEOUT_SECONDS,
         max_retries=MAX_RETRIES,
     )
 
+    optionen = {"response_format": response_format} if response_format else {}
+
     try:
         antwort = client.chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=[{"role": "user", "content": prompt}],
+            **optionen,
         )
-        return antwort.choices[0].message.content or ""
+        nachricht = antwort.choices[0].message
+        # Bei Structured Outputs kann das Modell ablehnen, statt das Schema zu
+        # fuellen. Nur ein echter String zaehlt -- so bleiben Antworten ohne
+        # das Feld (und Test-Doubles) unberuehrt.
+        refusal = getattr(nachricht, "refusal", None)
+        if isinstance(refusal, str) and refusal.strip():
+            logger.warning("OpenAI hat die Anfrage abgelehnt")
+            raise AIServiceError(
+                "Die KI hat die Anfrage abgelehnt. "
+                "Bitte pruefe die Notizen und versuche es erneut."
+            )
+        return nachricht.content or ""
+    except AIServiceError:
+        # Eigene Fehler unveraendert weiterreichen -- sonst wuerden sie unten
+        # in "nicht verfuegbar" umgedeutet.
+        raise
     except APITimeoutError:
         logger.warning("OpenAI-Timeout nach %ss", settings.OPENAI_TIMEOUT_SECONDS)
         # from None: der Originalfehler steht im Log, die Kette wird bewusst
@@ -163,6 +302,27 @@ def _mock_summary(goal):
         f"Hinterlegt sind {anzahl_ressourcen} Ressourcen. "
         f"Der Status ist aktuell: {goal.get_status_display()}."
     )
+
+
+def _mock_flashcards(goal):
+    sessions = list(goal.sessions.all()[:MAX_SESSIONS])
+    gesamt = sum(session.duration for session in sessions)
+    anzahl_ressourcen = goal.resources.count()
+
+    return [
+        {
+            "question": f"[Mock-Modus] Worum geht es im Lernziel „{goal.title}“?",
+            "answer": f"Um „{goal.title}“, aktueller Status: {goal.get_status_display()}.",
+        },
+        {
+            "question": "[Mock-Modus] Wie viel Lernzeit ist bisher erfasst?",
+            "answer": f"{len(sessions)} Lernsitzungen mit insgesamt {gesamt} Minuten.",
+        },
+        {
+            "question": "[Mock-Modus] Wie viele Ressourcen sind hinterlegt?",
+            "answer": f"{anzahl_ressourcen} Ressourcen.",
+        },
+    ]
 
 
 def _mock_next_steps(goal):
@@ -206,3 +366,31 @@ def suggest_next_steps(goal):
         )
 
     return schritte[:MAX_STEPS]
+
+
+def generate_flashcards(goal):
+    """Liefert 3 bis 5 Lernkarten als Liste von Dicts. Schreibt nichts in die DB.
+
+    Bereits vorhandene Fragen des Goals werden der KI mitgegeben und beim
+    Parsen als Duplikate verworfen.
+    """
+    vorhandene_fragen = list(
+        goal.flashcards.values_list("question", flat=True)[:MAX_EXISTING_QUESTIONS]
+    )
+
+    if is_mock_mode():
+        # Auch der Mock erzeugt keine Duplikate -- sonst legte jeder Klick
+        # dieselben Beispielkarten erneut an.
+        karten = _ohne_duplikate(_mock_flashcards(goal), vorhandene_fragen)
+        if not karten:
+            raise AIServiceError(
+                "[Mock-Modus] Alle Beispiel-Lernkarten sind bereits vorhanden. "
+                "Fuer neue Karten wird ein OpenAI-Schluessel benoetigt."
+            )
+        return karten
+
+    rohtext = _call_openai(
+        _build_flashcards_prompt(goal, vorhandene_fragen),
+        response_format=FLASHCARD_RESPONSE_FORMAT,
+    )
+    return _parse_flashcards(rohtext, vorhandene_fragen)

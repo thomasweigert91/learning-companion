@@ -1,129 +1,140 @@
-# Ticket: Persistente KI-Historie zu Lernzielen
+# Ticket: KI-Lernkarten-Generator mit interaktiver Abfrage
 
 ## 1. Problem / Ziel
 
-Die KI-Aktionen "Zusammenfassung generieren" und "Naechste Schritte vorschlagen"
-legen ihr Ergebnis bisher nur in der **Session** ab. Das hat drei Folgen:
+Die KI-Unterstuetzung beschreibt bisher nur den Lernstand (Zusammenfassung) und
+schlaegt naechste Schritte vor. Sie hilft aber nicht beim eigentlichen
+**Festigen** des Gelernten. Wer ein Thema wiederholen will, muss sich Fragen
+selbst ausdenken.
 
-- Nach Logout, Session-Ablauf oder Browserwechsel ist das Ergebnis verloren.
-- Pro Goal und Typ existiert immer nur das **letzte** Ergebnis; jede neue Anfrage
-  ueberschreibt die vorherige. Ein Verlauf -- etwa wie sich die Einschaetzung
-  ueber die Wochen veraendert hat -- ist nicht nachvollziehbar.
-- Seit dem echten API-Anschluss kostet jede Anfrage Geld. Ein Ergebnis, das beim
-  naechsten Login weg ist, muss erneut bezahlt werden.
+Dieses Ticket ergaenzt einen Lernkarten-Generator: Aus den Notizen der
+Lernsitzungen und den Ressourcen eines Goals erzeugt die KI 3 bis 5
+Frage-Antwort-Paare. Sie werden als Lernkarten gespeichert und auf der
+Goal-Detailseite als Abfrage-Ansicht angezeigt: Die Frage ist sichtbar, die
+Antwort wird erst auf Klick aufgedeckt. Gelernte Karten lassen sich markieren,
+ueberfluessige loeschen.
 
-Dieses Ticket speichert jedes erfolgreich erzeugte KI-Ergebnis dauerhaft in der
-Datenbank und zeigt alle Ergebnisse eines Goals als chronologische Historie auf
-der Goal-Detailseite. Einzelne Eintraege und der gesamte Verlauf eines Goals
-lassen sich loeschen -- ausschliesslich durch den Besitzer des Goals.
-
-**Bewusste Vertragsaenderung:** Feature 4 hat per Test festgeschrieben, dass
-KI-Ergebnisse *nicht* in der Datenbank landen
-(`test_results_are_not_persisted_in_database`) und stattdessen in der Session
-liegen. Genau diese Anforderung kehrt sich hier um. Die vier Tests, die den
-Session-Speicher pruefen, werden deshalb auf den neuen Datenbank-Vertrag
-umgestellt -- nicht abgeschwaecht, sondern auf das neue Verhalten gerichtet.
-
-**Vorab-Aufgabe (im selben Durchlauf erledigt):** `settings.py` laedt die lokale
-`.env` per `python-dotenv`, damit `python manage.py runserver` den API-Schluessel
-ohne manuelles Setzen der Umgebung erhaelt.
+Anders als Zusammenfassung und naechste Schritte liefert diese Aktion
+**strukturierte Daten** statt Fliesstext. Deshalb nutzt der Service die
+Structured Outputs der OpenAI-API mit einem JSON-Schema. Eine kaputte oder
+unvollstaendige Antwort muss sauber abgefangen werden, statt halbe Karten zu
+speichern oder einen 500er auszuloesen.
 
 ## 2. Akzeptanzkriterien
 
-### Vorab: .env-Unterstuetzung
-
-- [ ] `python-dotenv` steht mit Versionsgrenze in `requirements.txt`;
-      `settings.py` laedt `BASE_DIR / ".env"` vor dem Lesen jeder Einstellung.
-- [ ] Bereits gesetzte Umgebungsvariablen haben Vorrang (`override=False`), damit
-      Container und CI unveraendert aus der echten Umgebung lesen.
-- [ ] Ein Testlauf erreicht **nie** das echte OpenAI-Konto, auch wenn die `.env`
-      einen echten Schluessel enthaelt: ein Test-Runner erzwingt global
-      `AI_MOCK_MODE=True` und einen leeren Schluessel; ein Test belegt das.
-
 ### Modell
 
-- [ ] Neues Modell `AIFeedback` mit `goal` (ForeignKey auf `Goal`,
-      `on_delete=CASCADE`, `related_name="ai_feedbacks"`), `feedback_type`
-      (Choices `summary` / `next_steps`), `content` (TextField) und `created_at`
-      (DateTimeField, `auto_now_add=True`).
-- [ ] Standard-Sortierung: neueste zuerst (`-created_at`, `-pk` als
-      Tiebreaker fuer gleiche Zeitstempel).
-- [ ] Naechste Schritte werden zeilenweise in `content` abgelegt; eine Property
-      `steps` liefert sie wieder als Liste.
-- [ ] Wie bei `LearningSession` und `Resource` wird der Besitzer **nicht**
-      redundant gespeichert, sondern immer ueber `goal__user` aufgeloest.
-- [ ] Die Migration `0004_aifeedback` ist erzeugt und angewendet;
-      `makemigrations --check` meldet danach keine offenen Aenderungen.
-- [ ] Das Modell ist im Django-Admin registriert.
+- [ ] Neues Modell `Flashcard` mit `goal` (ForeignKey auf `Goal`,
+      `on_delete=CASCADE`, `related_name="flashcards"`), `question`
+      (TextField), `answer` (TextField), `is_mastered` (BooleanField,
+      `default=False`) und `created_at` (`auto_now_add=True`).
+- [ ] Sortierung fuer die Abfrage: noch nicht gelernte Karten zuerst, darin die
+      neuesten zuerst (`is_mastered`, `-created_at`, `-pk`).
+- [ ] Der Besitzer wird wie bei allen Kind-Modellen nur ueber `goal__user`
+      aufgeloest, nicht redundant gespeichert.
+- [ ] Migration `0005_flashcard` erzeugt und angewendet; rein additiv.
+- [ ] Im Django-Admin registriert.
 
-### Speichern
+### Service (`core/services/ai_service.py`)
 
-- [ ] Beide KI-Aktionen legen bei Erfolg **genau einen** `AIFeedback`-Eintrag mit
-      dem passenden Typ an.
-- [ ] Schlaegt der Aufruf fehl (`AIServiceError`), wird **nichts** gespeichert;
-      die Fehlermeldung erscheint wie bisher.
-- [ ] Der Session-Speicher entfaellt vollstaendig; es bleiben keine toten
-      Session-Schluessel zurueck.
-- [ ] `ai_service` bleibt datenbankfrei (bestehender Vertrag und Test
-      `test_service_does_not_touch_database`); gespeichert wird in der View.
-- [ ] Auch Ergebnisse des Mock-Modus werden gespeichert -- sie sind im Text
-      bereits als "[Mock-Modus]" gekennzeichnet.
+- [ ] Neue oeffentliche Funktion `generate_flashcards(goal)`; sie liefert eine
+      Liste von `{"question": ..., "answer": ...}` und schreibt wie die
+      bestehenden Funktionen **nichts** in die Datenbank.
+- [ ] Der Prompt basiert auf demselben, auf das Goal begrenzten Kontext wie die
+      anderen KI-Aktionen (Sitzungen mit Notizen, Ressourcen). Bereits
+      vorhandene Fragen des Goals werden mitgegeben (gedeckelt), damit die KI
+      keine Duplikate erzeugt.
+- [ ] Der Aufruf nutzt das konfigurierte Modell (Standard `gpt-4o-mini`) mit
+      `response_format` vom Typ `json_schema` und `strict: true`. Das Schema
+      erzwingt ein Objekt mit einer Liste `cards`, deren Eintraege genau
+      `question` und `answer` als Strings enthalten
+      (`additionalProperties: false`).
+- [ ] Die Anzahl 3 bis 5 wird **im Code** durchgesetzt, nicht dem Modell
+      ueberlassen: mehr als 5 werden gekuerzt, weniger als 3 verwertbare
+      Karten fuehren zu einem Fehler.
+- [ ] Fehlerbehandlung -- jeder dieser Faelle endet in einer verstaendlichen
+      `AIServiceError` und wird protokolliert, nie in einem 500er:
+      kein gueltiges JSON, falsche Struktur (kein Objekt, keine Liste `cards`),
+      Eintraege ohne oder mit leerem Text (werden verworfen), zu wenige
+      verwertbare Karten, eine Ablehnung durch das Modell (`refusal`).
+- [ ] Doppelte Fragen innerhalb einer Antwort und gegenueber vorhandenen Karten
+      (Vergleich ohne Gross-/Kleinschreibung und Randleerzeichen) werden
+      verworfen.
+- [ ] Der Mock-Modus liefert deterministisch 3 Karten aus den echten Goal-Daten.
 
-### Anzeige
+### Aktion und Verwaltung
 
-- [ ] Die Goal-Detailseite zeigt in der KI-Card wie bisher das jeweils
-      **neueste** Ergebnis je Typ ("Fortschrittszusammenfassung",
-      "Naechste Lernschritte") -- jetzt aus der Datenbank und mit Datum.
-- [ ] Darunter steht ein Abschnitt "KI-Verlauf" (Anker `#ki-verlauf`) als
-      Timeline aller Eintraege, neueste zuerst, jeweils mit Datum/Uhrzeit
-      (`<time datetime=...>`), Typ-Badge und formatiertem Text
-      (Zusammenfassung mit Zeilenumbruechen, Schritte als nummerierte Liste).
-- [ ] Ohne Eintraege zeigt der Abschnitt einen Leerzustand statt einer leeren
-      Timeline.
-- [ ] Die Historie wird mit einer festen Anzahl von Abfragen geladen, unabhaengig
-      von der Zahl der Eintraege (keine N+1-Abfragen).
-- [ ] Ergebnisse eines Goals erscheinen nie auf der Seite eines anderen Goals.
+- [ ] Button "Lernkarten generieren" in der KI-Card der Goal-Detailseite;
+      die Aktion ist nur per POST ausloesbar (GET -> 405).
+- [ ] Bei Erfolg werden die Karten gespeichert und angehaengt (bestehende
+      Karten und ihr Lernstatus bleiben erhalten); Redirect auf `#lernkarten`
+      mit Erfolgsmeldung, die im Abschnitt selbst erscheint.
+- [ ] Bei einem Fehler wird nichts gespeichert; die Fehlermeldung erscheint
+      ebenfalls im Abschnitt.
+- [ ] Der Button erhaelt denselben Ladezustand wie die beiden bestehenden
+      KI-Buttons (Spinner, alle KI-Buttons gesperrt), Ladetext
+      "Erstelle Lernkarten...".
+- [ ] Je Karte: "Als gelernt markieren" bzw. "Wieder lernen" (Umschalten von
+      `is_mastered`) und "Loeschen" -- beide nur per POST.
 
-### Loeschen
+### Abfrage-Ansicht
 
-- [ ] Jeder Eintrag hat einen Loeschen-Button (POST, CSRF, `aria-label` mit
-      Typ und Datum); danach Redirect zurueck auf `#ki-verlauf` mit
-      Erfolgsmeldung.
-- [ ] "Alle zuruecksetzen" fuehrt auf eine Bestaetigungsseite (GET) und loescht
-      erst per POST alle Eintraege **dieses** Goals -- Eintraege anderer Goals
-      desselben Nutzers bleiben unberuehrt.
-- [ ] Beide Loesch-Routen erfordern Login und liefern fuer fremde Eintraege bzw.
-      fremde Goals **404**, ohne etwas zu loeschen. Ein GET auf die
-      Einzel-Loesch-Route loest keine Loeschung aus (405).
-- [ ] Wird ein Goal geloescht, verschwindet seine KI-Historie mit (CASCADE); die
-      Loesch-Bestaetigung des Goals weist darauf hin.
+- [ ] Abschnitt "Lernkarten" (`id="lernkarten"`) als Bootstrap-Akkordeon: Die
+      Frage ist die Kopfzeile, die Antwort wird erst beim Aufklappen sichtbar.
+- [ ] Gelernte Karten tragen ein Badge "Gelernt" (Text, nicht nur Farbe).
+- [ ] Fortschrittsanzeige "x von y gelernt" mit zugaenglichem Balken.
+- [ ] Leerzustand mit Hinweis auf den Button.
+- [ ] Die Karten werden mit einer festen Anzahl von Abfragen geladen,
+      unabhaengig von ihrer Zahl.
+
+### Isolation und Sicherheit
+
+- [ ] Alle Routen erfordern Login. Fuer fremde Goals bzw. Karten liefern sie
+      **404**, ohne etwas zu aendern; bei fremden Goals wird der Service gar
+      nicht erst aufgerufen.
+- [ ] Karten eines Goals erscheinen nie auf der Seite eines anderen Goals.
+- [ ] KI-Text wird escaped ausgegeben.
+- [ ] Wird ein Goal geloescht, verschwinden seine Karten (CASCADE); die
+      Loesch-Bestaetigung nennt sie.
 
 ### Tests
 
-- [ ] Neue Tests belegen: Persistierung je Typ, keine Persistierung im
-      Fehlerfall, Sortierung, `steps`-Property, Anzeige von Historie und
-      Leerzustand, Abfrage-Anzahl unabhaengig von der Eintragszahl, Loeschen
-      einzeln und gesamt, Login-Pflicht, 404 bei fremden Daten ohne Loeschung,
-      CASCADE beim Goal-Loeschen.
-- [ ] Alle Tests laufen im Mock-Modus bzw. mit gepatchtem SDK -- deterministisch
-      und kostenlos.
-- [ ] Alle uebrigen Bestandstests bleiben unveraendert gruen.
+- [ ] Service: Mock-Ergebnis, Schema-Parameter im SDK-Aufruf, gueltige
+      Antwort, ungueltiges JSON, falsche Struktur, leere Felder, zu wenige und
+      zu viele Karten, Duplikate, Refusal, Prompt nur mit eigenen Goal-Daten.
+- [ ] Views: Speichern, Fehlerfall ohne Speichern, Umschalten, Loeschen,
+      GET -> 405, Login-Pflicht, 404 ohne Aenderung bei fremden Daten,
+      Service-Aufruf bei fremdem Goal ausgeschlossen.
+- [ ] Anzeige: Akkordeon, Sortierung, Fortschritt, Leerzustand,
+      Abfrage-Anzahl, keine Karten anderer Goals.
+- [ ] Alle Tests deterministisch und ohne Netzwerk (Mock bzw. gepatchtes SDK);
+      alle Bestandstests gruen.
 
 ## 3. Technische Rahmenbedingungen & Out-of-Scope
 
 **Rahmenbedingungen**
 
-- Django 5.2, SQLite; eine neue Migration, keine Aenderung an bestehenden Tabellen.
-- UI im bestehenden Bootstrap-5-Stil aus Feature 7; neue Routen fuegen sich in
-  die Navigationsbereiche ein (Goal-Routen markieren "Goals").
+- `openai` SDK 1.x; Structured Outputs ueber `chat.completions.create` mit
+  `response_format={"type": "json_schema", ...}`. Das JSON wird selbst
+  geparst und validiert, damit jeder Fehlerfall explizit behandelt und
+  testbar ist.
+- `minItems`/`maxItems` werden bewusst **nicht** ins Schema geschrieben: Die
+  Anzahl wird ohnehin im Code durchgesetzt, und ein im Strict-Modus nicht
+  unterstuetztes Schluesselwort wuerde jede Anfrage mit einem Schemafehler
+  scheitern lassen.
+- Das Akkordeon nutzt Bootstraps eigene Collapse-Komponente; es kommt kein
+  zusaetzliches JavaScript hinzu ausser der Erweiterung des bestehenden
+  Ladezustands-Scripts.
+- Meldungen, die in einem Abschnitt statt oben auf der Seite erscheinen,
+  werden vereinheitlicht (KI-Verlauf und Lernkarten nutzen denselben
+  Mechanismus).
 - Bestehende Texte, auf die Tests pruefen, bleiben wortgleich.
 
 **Out-of-Scope**
 
-- Kein Bearbeiten von KI-Eintraegen.
-- Kein Paginieren, Filtern oder Durchsuchen der Historie.
-- Keine Kostenerfassung, kein Token-Zaehler, kein Rate-Limit pro Nutzer.
-- Kein Export der Historie.
-- Keine Uebernahme alter Session-Ergebnisse in die Datenbank (sie sind
-  fluechtig und verfallen ohnehin).
-- Keine Aenderung an Prompts, Modell oder Fehlerbehandlung des KI-Service.
+- Keine Wiederholungsplanung (Spaced Repetition), keine Faelligkeitsdaten.
+- Kein Bearbeiten von Karten und kein manuelles Anlegen.
+- Kein separater Vollbild-Quizmodus, keine Punkte oder Statistiken ueber das
+  "x von y gelernt" hinaus.
+- Keine Lernkarten im Dashboard.
+- Keine Aenderung an Zusammenfassung, naechsten Schritten oder deren Prompts.

@@ -114,7 +114,7 @@ class SpeichernTests(AIFeedbackTestCase):
                 self.client.post(reverse(name, args=[self.goal_a.pk]))
         self.assertEqual(AIFeedback.objects.count(), 0)
 
-    @override_settings(AI_MOCK_MODE=False, OPENAI_API_KEY="sk-test-nur-fuer-tests")
+    @override_settings(AI_MOCK_MODE=False, OPENAI_API_KEY="test-schluessel-platzhalter")
     def test_echter_pfad_speichert_modellantwort(self):
         """Mock aus, SDK-Aufruf gepatcht: gespeichert wird die (bereinigte) Modellantwort."""
         with patch(

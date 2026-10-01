@@ -174,3 +174,26 @@ class AIFeedback(models.Model):
     def steps(self):
         """Naechste Schritte als Liste -- gespeichert wird eine Zeile pro Schritt."""
         return [zeile.strip() for zeile in self.content.splitlines() if zeile.strip()]
+
+
+class Flashcard(models.Model):
+    """Eine KI-erzeugte Lernkarte zu genau einem Goal.
+
+    Besitzer wie bei allen Kind-Modellen nur ueber goal__user.
+    """
+
+    goal = models.ForeignKey(Goal, on_delete=models.CASCADE, related_name="flashcards")
+    question = models.TextField()
+    answer = models.TextField()
+    is_mastered = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # Abfrage-Reihenfolge: offene Karten zuerst (False < True), darin die
+        # neuesten zuerst; -pk als Tiebreaker bei gleichem Zeitstempel.
+        ordering = ["is_mastered", "-created_at", "-pk"]
+        verbose_name = "Lernkarte"
+        verbose_name_plural = "Lernkarten"
+
+    def __str__(self):
+        return self.question[:60]

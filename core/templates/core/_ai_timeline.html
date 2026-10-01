@@ -1,12 +1,5 @@
 {# Erwartet "feedbacks" (AIFeedback, neueste zuerst). Geordnete Liste: die Reihenfolge ist Teil der Information. #}
-{% for message in messages %}
-    {% if "ki-verlauf" in message.extra_tags %}
-        <div class="alert alert-success alert-dismissible fade show py-2" role="status">
-            <i class="bi bi-check-circle me-1" aria-hidden="true"></i>{{ message }}
-            <button type="button" class="btn-close py-2" data-bs-dismiss="alert" aria-label="Meldung schliessen"></button>
-        </div>
-    {% endif %}
-{% endfor %}
+{% include "core/_abschnitt_meldungen.html" with bereich="ki-verlauf" %}
 {% if feedbacks %}
     <ol class="lc-timeline list-unstyled mb-0">
         {% for feedback in feedbacks %}

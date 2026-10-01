@@ -22,7 +22,7 @@ from core.forms import (
     RegistrationForm,
     ResourceForm,
 )
-from core.models import AIFeedback, Goal, LearningSession, Profile, Resource
+from core.models import AIFeedback, Flashcard, Goal, LearningSession, Profile, Resource
 from core.services import ai_service
 
 
@@ -137,6 +137,12 @@ class GoalDetailView(OwnGoalMixin, DetailView):
         # koennen hier strukturell nicht auftauchen.
         feedbacks = list(self.object.ai_feedbacks.all())
         context["ai_feedbacks"] = feedbacks
+
+        # Lernkarten in einer Abfrage; die Zaehler kommen aus derselben Liste.
+        karten = list(self.object.flashcards.all())
+        context["flashcards"] = karten
+        context["flashcards_gesamt"] = len(karten)
+        context["flashcards_gelernt"] = sum(karte.is_mastered for karte in karten)
 
         # Frist fuer das Sicherheitsnetz des Ladezustands (siehe goal_detail.html).
         context["ki_freigabe_ms"] = int(ai_service.max_request_seconds() * 1000)
@@ -291,21 +297,31 @@ class ResourceDeleteView(LoginRequiredMixin, DeleteView):
 # --- KI-Aktionen ------------------------------------------------------------
 
 
+# Meldungen mit dem Tag "abschnitt" zeigt nicht base.html oben auf der Seite an,
+# sondern der jeweilige Abschnitt selbst (core/_abschnitt_meldungen.html). Nach
+# einem Redirect auf einen Anker laege eine Meldung oben sonst ausser Sicht.
+ABSCHNITT_TAG = "abschnitt"
+KI_VERLAUF_TAG = f"{ABSCHNITT_TAG} ki-verlauf"
+LERNKARTEN_TAG = f"{ABSCHNITT_TAG} lernkarten"
+
+
 class GoalAIActionMixin(LoginRequiredMixin):
-    """Gemeinsamer Ablauf beider KI-Aktionen.
+    """Gemeinsamer Ablauf aller KI-Aktionen eines Goals.
 
     Nur POST: ein GET laeuft in 405 und loest damit keine Aktion aus.
 
     Gespeichert wird hier und nicht im Service: ai_service bleibt bewusst
-    datenbankfrei und liefert nur Text bzw. eine Liste.
+    datenbankfrei und liefert nur Daten.
     """
 
-    feedback_type = None
+    # Wohin umgeleitet wird und wo Meldungen erscheinen; leer = Seitenanfang.
+    anchor = ""
+    message_tags = ""
 
     def run_service(self, goal):
         raise NotImplementedError
 
-    def to_content(self, ergebnis):
+    def save_result(self, goal, ergebnis):
         raise NotImplementedError
 
     def post(self, request, pk):
@@ -315,20 +331,32 @@ class GoalAIActionMixin(LoginRequiredMixin):
         try:
             ergebnis = self.run_service(goal)
         except ai_service.AIServiceError as fehler:
-            # Im Fehlerfall wird nichts gespeichert -- die Historie enthaelt
-            # ausschliesslich tatsaechlich erzeugte Ergebnisse.
-            messages.error(request, str(fehler))
+            # Im Fehlerfall wird nichts gespeichert -- es landen ausschliesslich
+            # tatsaechlich erzeugte Ergebnisse in der Datenbank.
+            messages.error(request, str(fehler), extra_tags=self.message_tags)
         else:
-            AIFeedback.objects.create(
-                goal=goal,
-                feedback_type=self.feedback_type,
-                content=self.to_content(ergebnis),
-            )
+            self.save_result(goal, ergebnis)
 
-        return redirect(goal.get_absolute_url())
+        return redirect(f"{goal.get_absolute_url()}{self.anchor}")
 
 
-class GoalSummaryView(GoalAIActionMixin, View):
+class AIFeedbackActionMixin(GoalAIActionMixin):
+    """KI-Aktionen, deren Ergebnis als AIFeedback in den KI-Verlauf eingeht."""
+
+    feedback_type = None
+
+    def to_content(self, ergebnis):
+        raise NotImplementedError
+
+    def save_result(self, goal, ergebnis):
+        AIFeedback.objects.create(
+            goal=goal,
+            feedback_type=self.feedback_type,
+            content=self.to_content(ergebnis),
+        )
+
+
+class GoalSummaryView(AIFeedbackActionMixin, View):
     feedback_type = AIFeedback.FeedbackType.SUMMARY
 
     def run_service(self, goal):
@@ -338,7 +366,7 @@ class GoalSummaryView(GoalAIActionMixin, View):
         return ergebnis
 
 
-class GoalNextStepsView(GoalAIActionMixin, View):
+class GoalNextStepsView(AIFeedbackActionMixin, View):
     feedback_type = AIFeedback.FeedbackType.NEXT_STEPS
 
     def run_service(self, goal):
@@ -349,12 +377,6 @@ class GoalNextStepsView(GoalAIActionMixin, View):
         # Liste. Der Service zerlegt die Antwort bereits zeilenweise, ein
         # Schritt enthaelt also nie selbst einen Zeilenumbruch.
         return "\n".join(ergebnis)
-
-
-# Meldungen mit diesem Tag zeigt der Abschnitt #ki-verlauf selbst an statt
-# base.html: nach dem Redirect auf den Anker laege die Meldung oben auf der
-# Seite sonst ausserhalb des sichtbaren Bereichs.
-KI_VERLAUF_TAG = "ki-verlauf"
 
 
 class AIFeedbackDeleteView(LoginRequiredMixin, View):
@@ -404,6 +426,63 @@ class AIFeedbackClearView(LoginRequiredMixin, View):
             extra_tags=KI_VERLAUF_TAG,
         )
         return redirect(f"{goal.get_absolute_url()}#ki-verlauf")
+
+
+# --- Lernkarten --------------------------------------------------------------
+
+
+class FlashcardGenerateView(GoalAIActionMixin, View):
+    """Erzeugt Lernkarten und haengt sie an; vorhandene Karten bleiben erhalten."""
+
+    anchor = "#lernkarten"
+    message_tags = LERNKARTEN_TAG
+
+    def run_service(self, goal):
+        return ai_service.generate_flashcards(goal)
+
+    def save_result(self, goal, ergebnis):
+        # Umgekehrt anlegen: Die Sortierung "neueste zuerst" kehrt die Reihenfolge
+        # innerhalb eines Durchlaufs sonst um (bulk_create vergibt aufsteigende
+        # Zeitstempel). So stehen neue Durchlaeufe oben, und innerhalb eines
+        # Durchlaufs bleibt die Reihenfolge der KI erhalten.
+        Flashcard.objects.bulk_create(
+            Flashcard(goal=goal, question=karte["question"], answer=karte["answer"])
+            for karte in reversed(ergebnis)
+        )
+        messages.success(
+            self.request,
+            f"{len(ergebnis)} {'Lernkarte' if len(ergebnis) == 1 else 'Lernkarten'} erstellt.",
+            extra_tags=self.message_tags,
+        )
+
+
+class OwnFlashcardMixin(LoginRequiredMixin):
+    """Nur POST; eine fremde Karte ist im Queryset nicht enthalten -> 404."""
+
+    def get_flashcard(self):
+        return get_object_or_404(
+            Flashcard.objects.filter(goal__user=self.request.user).select_related("goal"),
+            pk=self.kwargs["pk"],
+        )
+
+    def zurueck(self, karte):
+        return redirect(f"{karte.goal.get_absolute_url()}#lernkarten")
+
+
+class FlashcardToggleView(OwnFlashcardMixin, View):
+    def post(self, request, pk):
+        karte = self.get_flashcard()
+        karte.is_mastered = not karte.is_mastered
+        karte.save(update_fields=["is_mastered"])
+        return self.zurueck(karte)
+
+
+class FlashcardDeleteView(OwnFlashcardMixin, View):
+    def post(self, request, pk):
+        karte = self.get_flashcard()
+        karte.delete()
+        messages.success(request, "Die Lernkarte wurde geloescht.", extra_tags=LERNKARTEN_TAG)
+        return self.zurueck(karte)
 
 
 # --- Dashboard --------------------------------------------------------------

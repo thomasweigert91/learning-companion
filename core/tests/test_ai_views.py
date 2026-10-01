@@ -263,11 +263,13 @@ class LadezustandTests(AIViewTestCase):
             reverse("core:goal_detail", args=[self.goal_a.pk])
         ).content.decode()
 
-    def test_beide_formulare_markiert_mit_ladetext(self):
+    def test_alle_ki_formulare_markiert_mit_ladetext(self):
+        # Feature 9: Lernkarten-Button als dritte KI-Aktion mit demselben Ladezustand.
         formulare = re.findall(r"<form [^>]*data-ki-aktion>", self.html)
-        self.assertEqual(len(formulare), 2)
+        self.assertEqual(len(formulare), 3)
         self.assertIn('data-ladetext="Generiere Zusammenfassung..."', self.html)
         self.assertIn('data-ladetext="Ermittle nächste Schritte..."', self.html)
+        self.assertIn('data-ladetext="Erstelle Lernkarten..."', self.html)
 
     def test_live_region_fuer_screenreader(self):
         self.assertIn('<p class="visually-hidden" role="status" id="ki-status"></p>', self.html)

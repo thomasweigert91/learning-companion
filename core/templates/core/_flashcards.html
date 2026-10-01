@@ -1,0 +1,51 @@
+{# Erwartet "flashcards" (offene zuerst). Akkordeon: die Frage ist sichtbar, die Antwort erst nach dem Aufklappen -- das ist die Abfrage. #}
+{% if flashcards %}
+    <div class="accordion" id="lernkarten-akkordeon">
+        {% for karte in flashcards %}
+            <div class="accordion-item">
+                <h3 class="accordion-header" id="karte-{{ karte.pk }}-kopf">
+                    <button class="accordion-button collapsed gap-2" type="button"
+                            data-bs-toggle="collapse" data-bs-target="#karte-{{ karte.pk }}"
+                            aria-expanded="false" aria-controls="karte-{{ karte.pk }}">
+                        <span class="me-auto">{{ karte.question }}</span>
+                        {% if karte.is_mastered %}
+                            <span class="badge text-bg-success flex-shrink-0"><i class="bi bi-check2 me-1" aria-hidden="true"></i>Gelernt</span>
+                        {% endif %}
+                    </button>
+                </h3>
+                <div id="karte-{{ karte.pk }}" class="accordion-collapse collapse"
+                     aria-labelledby="karte-{{ karte.pk }}-kopf">
+                    <div class="accordion-body">
+                        <p class="small text-body-secondary mb-1">Antwort</p>
+                        <p class="mb-3">{{ karte.answer|linebreaksbr }}</p>
+                        <div class="d-flex flex-wrap gap-2">
+                            <form action="{% url 'core:flashcard_toggle' karte.pk %}" method="post">
+                                {% csrf_token %}
+                                {% if karte.is_mastered %}
+                                    <button type="submit" class="btn btn-sm btn-outline-secondary">
+                                        <i class="bi bi-arrow-counterclockwise me-1" aria-hidden="true"></i>Wieder lernen<span class="visually-hidden"> (Lernkarte: {{ karte.question|truncatechars:60 }})</span>
+                                    </button>
+                                {% else %}
+                                    <button type="submit" class="btn btn-sm btn-success">
+                                        <i class="bi bi-check2 me-1" aria-hidden="true"></i>Als gelernt markieren<span class="visually-hidden"> (Lernkarte: {{ karte.question|truncatechars:60 }})</span>
+                                    </button>
+                                {% endif %}
+                            </form>
+                            <form action="{% url 'core:flashcard_delete' karte.pk %}" method="post">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-sm btn-outline-danger">
+                                    <i class="bi bi-trash3 me-1" aria-hidden="true"></i>Loeschen<span class="visually-hidden"> (Lernkarte: {{ karte.question|truncatechars:60 }})</span>
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+{% else %}
+    <p class="text-body-secondary mb-0">
+        Noch keine Lernkarten. Ueber &bdquo;Lernkarten generieren&ldquo; in der
+        KI-Unterstuetzung erstellt die KI Fragen aus deinen Notizen und Ressourcen.
+    </p>
+{% endif %}

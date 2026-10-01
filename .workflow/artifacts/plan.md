@@ -1,204 +1,196 @@
-# Implementierungs-Plan: Persistente KI-Historie zu Lernzielen
+# Implementierungs-Plan: KI-Lernkarten-Generator mit interaktiver Abfrage
 
 ## 1. Betroffene Dateien
 
-**Vorab-Aufgabe (.env)** -- bereits umgesetzt und verifiziert:
+- Ändern: `core/models.py` (Modell `Flashcard`)
+- Neu: `core/migrations/0005_flashcard.py` (per `makemigrations`)
+- Ändern: `core/admin.py` (Registrierung `Flashcard`)
+- Ändern: `core/services/ai_service.py` (`generate_flashcards`, Schema, Parser, Mock; `_call_openai` um `response_format` und Refusal-Prüfung erweitert)
+- Ändern: `core/views.py` (Mixin um Speicher-Hook verallgemeinert; drei neue Views; Kontext der Detailseite; einheitliche Abschnitts-Meldungen)
+- Ändern: `core/urls.py` (drei Routen)
+- Ändern: `core/templates/core/goal_detail.html` (dritter KI-Button, Abschnitt "Lernkarten")
+- Neu: `core/templates/core/_flashcards.html` (Akkordeon-Partial)
+- Neu: `core/templates/core/_abschnitt_meldungen.html` (Meldungen innerhalb eines Abschnitts)
+- Ändern: `core/templates/core/_ai_timeline.html` (nutzt das neue Meldungs-Partial)
+- Ändern: `core/templates/base.html` (überspringt Abschnitts-Meldungen generisch)
+- Ändern: `core/templates/core/goal_confirm_delete.html` (Hinweis auf Lernkarten)
+- Ändern: `core/tests/test_ai_views.py` (Ladezustand: drei statt zwei KI-Formulare)
+- Ändern: `core/tests/test_ai_feedback.py` (schlüsselartiges Test-Literal ersetzt, siehe unten)
+- Neu: `core/tests/test_flashcards.py`
 
-- Ändern: `requirements.txt` (`python-dotenv>=1.0,<2.0`)
-- Ändern: `learning_companion/settings.py` (`load_dotenv(BASE_DIR / ".env")`, `TEST_RUNNER`)
-- Neu: `core/test_runner.py` (`OfflineTestRunner`)
-- Neu: `core/tests/test_offline.py`
-
-**Feature 8**
-
-- Ändern: `core/models.py` (Modell `AIFeedback`)
-- Neu: `core/migrations/0004_aifeedback.py` (per `makemigrations` erzeugt)
-- Ändern: `core/admin.py` (Registrierung `AIFeedback`)
-- Ändern: `core/views.py` (Session-Speicher → DB; Kontext der Detailseite; zwei Lösch-Views)
-- Ändern: `core/urls.py` (zwei neue Routen)
-- Ändern: `core/templates/core/goal_detail.html` (KI-Card aus DB, Abschnitt "KI-Verlauf")
-- Neu: `core/templates/core/_ai_timeline.html` (Timeline-Partial)
-- Neu: `core/templates/core/aifeedback_confirm_clear.html` (Bestätigung "Alle zurücksetzen")
-- Ändern: `core/templates/core/goal_confirm_delete.html` (Hinweis auf mitgelöschte KI-Historie)
-- Ändern: `core/templates/base.html` (wenige Zeilen CSS für die Timeline)
-- Ändern: `core/tests/test_ai_views.py` (Session-Asserts → DB-Asserts, siehe Abschnitt 4)
-- Neu: `core/tests/test_ai_feedback.py`
-
-**Bewusst unverändert:** `core/services/ai_service.py`. Der Service liefert weiterhin
-nur Text bzw. eine Liste und schreibt nichts in die DB -- dieser Vertrag ist durch
-`test_service_does_not_touch_database` festgeschrieben und hält den Service frei
-von Persistenz-Details. Die "Service-Anpassung" findet an der Aufrufstelle statt:
-die View nimmt das Ergebnis entgegen und persistiert es.
+**Vorab behoben:** `test_ai_feedback.py` enthielt seit Feature 8 das Literal
+`"sk-test-…"` als Test-Schlüssel. Das verstößt gegen die Projektkonvention aus
+Feature 4 (kein schlüsselartiges Literal im Repository, siehe
+`TEST_SCHLUESSEL` in `test_ai_service.py`) und würde von Secret-Scannern
+gemeldet. Ersetzt durch den Platzhalter der Konvention.
 
 ## 2. Datenmodelle & Migrationen
 
 ```python
-class AIFeedback(models.Model):
-    """Ein gespeichertes KI-Ergebnis zu genau einem Goal.
-
-    Besitzer wie bei LearningSession/Resource nur über goal__user.
-    """
-
-    class FeedbackType(models.TextChoices):
-        SUMMARY = "summary", "Zusammenfassung"
-        NEXT_STEPS = "next_steps", "Naechste Schritte"
-
-    goal = models.ForeignKey(Goal, on_delete=models.CASCADE, related_name="ai_feedbacks")
-    feedback_type = models.CharField(max_length=20, choices=FeedbackType.choices)
-    content = models.TextField()
+class Flashcard(models.Model):
+    goal = models.ForeignKey(Goal, on_delete=models.CASCADE, related_name="flashcards")
+    question = models.TextField()
+    answer = models.TextField()
+    is_mastered = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["-created_at", "-pk"]
-
-    @property
-    def steps(self):
-        return [zeile for zeile in self.content.splitlines() if zeile.strip()]
+        # Abfrage-Reihenfolge: offene Karten zuerst (False < True), darin neueste zuerst.
+        ordering = ["is_mastered", "-created_at", "-pk"]
 ```
 
-- **Speicherformat der Schritte:** eine Zeile pro Schritt. Der Service zerlegt die
-  Modellantwort bereits zeilenweise; ein einzelner Schritt enthält daher nie einen
-  Zeilenumbruch, das Format ist verlustfrei umkehrbar.
-- **Badge-Labels** bewusst "Zusammenfassung" / "Naechste Schritte" -- *nicht*
-  "Fortschrittszusammenfassung" / "Naechste Lernschritte". Diese beiden Wörter
-  sind die Überschriften des Ergebnisbereichs, deren Abwesenheit vor der ersten
-  Nutzung `test_no_result_block_before_first_use` prüft.
-- **`-pk` als Tiebreaker:** zwei Einträge in derselben Mikrosekunde (Tests,
-  Doppelklick) hätten sonst keine definierte Reihenfolge.
-- **Migration:** `python manage.py makemigrations core` → `0004_aifeedback`;
-  danach `migrate` auf die Dev-Datenbank. Rein additiv, keine bestehende Tabelle
-  wird verändert, kein Datenmigrationsschritt nötig.
+- Kein `user`-Feld; Besitz über `goal__user` wie bei `LearningSession`,
+  `Resource`, `AIFeedback`.
+- Migration `0005_flashcard`: ein `CREATE TABLE` plus Index auf `goal_id`,
+  keine bestehende Tabelle berührt.
 
 ## 3. Schrittweise Umsetzung
 
-- [ ] **Schritt 1: Setup & Models** -- `AIFeedback` in `core/models.py`,
-      Migration erzeugen und anwenden, Admin-Registrierung
-      (`list_display = ("goal", "feedback_type", "created_at")`,
-      `list_filter = ("feedback_type",)`, `search_fields = ("goal__title", "content")`).
+- [ ] **Schritt 1: Setup & Models** -- Modell, Migration erzeugen und
+      anwenden, Admin (`list_display = ("question", "goal", "is_mastered", "created_at")`,
+      `list_filter = ("is_mastered",)`).
 
-- [ ] **Schritt 2: Business-Logik / Views**
+- [ ] **Schritt 2: Service**
 
-      *Speichern* -- `GoalAIActionMixin` verliert `session_key` und
-      `build_result`, bekommt stattdessen `feedback_type` und `to_content()`:
+      *Konstanten:* `MIN_FLASHCARDS = 3`, `MAX_FLASHCARDS = 5`,
+      `MAX_EXISTING_QUESTIONS = 30` (Deckel für die Duplikat-Liste im Prompt).
+
+      *Schema* (Strict Structured Output):
       ```python
-      try:
-          ergebnis = self.run_service(goal)
-      except ai_service.AIServiceError as fehler:
-          messages.error(request, str(fehler))
-      else:
-          AIFeedback.objects.create(
-              goal=goal, feedback_type=self.feedback_type,
-              content=self.to_content(ergebnis),
-          )
+      FLASHCARD_RESPONSE_FORMAT = {
+          "type": "json_schema",
+          "json_schema": {
+              "name": "lernkarten",
+              "strict": True,
+              "schema": {
+                  "type": "object",
+                  "properties": {
+                      "cards": {
+                          "type": "array",
+                          "items": {
+                              "type": "object",
+                              "properties": {
+                                  "question": {"type": "string"},
+                                  "answer": {"type": "string"},
+                              },
+                              "required": ["question", "answer"],
+                              "additionalProperties": False,
+                          },
+                      }
+                  },
+                  "required": ["cards"],
+                  "additionalProperties": False,
+              },
+          },
+      }
       ```
-      `GoalSummaryView.to_content` gibt den Text zurück,
-      `GoalNextStepsView.to_content` verbindet die Liste mit `"\n"`. Die
-      Konstanten `AI_SUMMARY_KEY` / `AI_NEXT_STEPS_KEY` entfallen ersatzlos.
+      Strict-Modus verlangt `required` für alle Felder und
+      `additionalProperties: false` auf jeder Objektebene -- beides erfüllt.
+      Keine `minItems`/`maxItems` (siehe Ticket, Rahmenbedingungen).
 
-      *Anzeige* -- `GoalDetailView.get_context_data`:
-      ```python
-      feedbacks = list(self.object.ai_feedbacks.all())   # genau 1 Abfrage
-      context["ai_feedbacks"] = feedbacks
-      context["ai_summary"] = next((f for f in feedbacks if f.feedback_type == SUMMARY), None)
-      context["ai_next_steps"] = next((f for f in feedbacks if f.feedback_type == NEXT_STEPS), None)
-      ```
-      Die "neuesten je Typ" werden aus der bereits geladenen Liste gewählt statt
-      mit zwei weiteren Abfragen. `ai_summary`/`ai_next_steps` werden nur gesetzt,
-      wenn ein Eintrag existiert (der bestehende Test prüft die Abwesenheit des
-      Schlüssels im Kontext).
+      *`_call_openai(prompt, response_format=None)`:* reicht `response_format`
+      nur durch, wenn gesetzt -- die beiden bestehenden Aufrufe bleiben
+      byte-identisch. Neu: Liefert das Modell eine `refusal`, wird eine
+      `AIServiceError` geworfen. Damit sie nicht vom generischen
+      `except Exception` in "nicht verfügbar" umgedeutet wird, steht davor ein
+      `except AIServiceError: raise`.
 
-      *Löschen* --
-      - `AIFeedbackDeleteView(LoginRequiredMixin, View)`, nur `post()`:
-        `get_object_or_404(AIFeedback.objects.filter(goal__user=request.user)
-        .select_related("goal"), pk=pk)` → `delete()` → Erfolgsmeldung → Redirect
-        auf `goal.get_absolute_url() + "#ki-verlauf"`. GET → 405 durch `View`.
-      - `AIFeedbackClearView(LoginRequiredMixin, View)`: Goal per
-        `get_object_or_404(Goal.objects.filter(user=request.user), pk=pk)`;
-        `get()` rendert die Bestätigung mit Anzahl, `post()` löscht
-        `goal.ai_feedbacks.all()` und meldet die Anzahl.
+      *`_build_flashcards_prompt(goal, vorhandene_fragen)`:* Aufgabe (3–5
+      Paare auf Deutsch, aus dem Kontext beantwortbar, knappe Antworten), dann
+      `_format_context(goal)`, dann ggf. "Diese Fragen existieren bereits …".
 
-      Beide folgen dem Muster des Projekts: gefiltert statt nachträglich geprüft
-      -- ein fremder PK ist im Queryset nicht enthalten, daraus folgt 404, bevor
-      irgendetwas gelöscht wird.
+      *`_parse_flashcards(rohtext, vorhandene_fragen)`:*
+      1. `json.loads` → bei `JSONDecodeError` loggen + `AIServiceError`.
+      2. Kein `dict` oder `cards` keine Liste → loggen + `AIServiceError`.
+      3. Je Eintrag: nur `dict` mit nicht-leerem `str` in beiden Feldern;
+         `strip()`; Duplikat-Schlüssel `frage.strip().casefold()` gegen bereits
+         Gesehenes und Vorhandenes.
+      4. Weniger als `MIN_FLASHCARDS` → `AIServiceError`;
+         mehr als `MAX_FLASHCARDS` → kürzen.
 
-- [ ] **Schritt 3: URLs** --
-      `goals/<int:pk>/ai/history/clear/` → `goal_ai_history_clear`;
-      `ai-feedback/<int:pk>/delete/` → `ai_feedback_delete`.
-      Der Präfix `goal…` markiert in der Navbar automatisch "Goals"; für
-      `ai_feedback_delete` ist das ohne Belang, die Route rendert nie eine Seite.
+      *`generate_flashcards(goal)`:* vorhandene Fragen (gedeckelt) laden;
+      im Mock `_mock_flashcards(goal)`, sonst Prompt → `_call_openai(…,
+      FLASHCARD_RESPONSE_FORMAT)` → Parser. Rückgabe: Liste von Dicts. Keine
+      DB-Schreibzugriffe.
 
-- [ ] **Schritt 4: UI / Templates**
-      - `goal_detail.html`, KI-Card: die Blöcke "Fortschrittszusammenfassung" und
-        "Naechste Lernschritte" lesen aus `ai_summary.content` bzw.
-        `ai_next_steps.steps` und zeigen zusätzlich das Erzeugungsdatum.
-      - Neuer Abschnitt in der Hauptspalte: Card "KI-Verlauf" (`id="ki-verlauf"`,
-        `aria-labelledby`) mit Eintragsanzahl im Kopf und Button
-        "Alle zuruecksetzen" (nur bei vorhandenen Einträgen, `btn-outline-danger`).
-      - `_ai_timeline.html`: `<ol class="lc-timeline">` -- semantisch eine
-        geordnete Liste, neueste zuerst. Je Eintrag: Typ-Badge
-        (Summary `text-bg-info`, Schritte `text-bg-warning`, jeweils mit Icon und
-        Text), `<time datetime="{{ f.created_at|date:'c' }}">`, Inhalt
-        (`linebreaksbr` bzw. `<ol>` aus `steps`), Löschen-Button als POST-Form mit
-        `aria-label="KI-Eintrag (<Typ>) vom <Datum> loeschen"`.
-      - Leerzustand: "Noch keine KI-Ergebnisse gespeichert."
-      - `aifeedback_confirm_clear.html`: Card im Stil der übrigen
-        Lösch-Bestätigungen, nennt Goal und Anzahl, POST + Abbrechen.
-      - `goal_confirm_delete.html`: Hinweis ergänzt um Ressourcen und KI-Verlauf.
-      - `base.html`: CSS für die Timeline-Linie und -Punkte (`.lc-timeline`).
+      *`_mock_flashcards(goal)`:* drei Karten aus Titel, Sitzungszahl/-minuten
+      und Ressourcenzahl -- deterministisch, mit "[Mock-Modus]" markiert.
 
-- [ ] **Schritt 5: Tests** -- siehe Abschnitt 4.
+- [ ] **Schritt 3: Views**
 
-- [ ] **Schritt 6: Validierung** -- `makemigrations --check --dry-run`, `ruff check .`,
-      `python manage.py test`, `validate_code.ps1`; Sichtprüfung im Browser mit
-      temporärem Prüfnutzer (Mock-Modus erzwungen, damit die Sichtprüfung keine
-      API-Kosten verursacht), anschließend Prüfnutzer wieder löschen.
+      *Mixin verallgemeinern:* `GoalAIActionMixin.post` ruft nach Erfolg
+      `self.save_result(goal, ergebnis)` und danach `self.success_response(goal, anzahl)`.
+      Für Zusammenfassung/Schritte bleibt das Verhalten identisch (AIFeedback
+      anlegen, Redirect auf die Detailseite, Fehler oben). Neue Klassenattribute
+      `error_extra_tags` und `anchor` steuern Meldungsort und Sprungziel.
+
+      `FlashcardGenerateView`: `run_service` → `generate_flashcards`;
+      `save_result` → `Flashcard.objects.bulk_create(...)`; Erfolgsmeldung
+      "n Lernkarten erstellt." im Abschnitt; Fehler ebenfalls im Abschnitt;
+      Redirect `#lernkarten`.
+
+      `FlashcardToggleView` (POST): `get_object_or_404(Flashcard.objects
+      .filter(goal__user=request.user).select_related("goal"), pk=pk)`,
+      `is_mastered = not is_mastered`, `save(update_fields=["is_mastered"])`.
+
+      `FlashcardDeleteView` (POST): gleiches Queryset, `delete()`.
+
+      *Detailseite:* `cards = list(self.object.flashcards.all())` (eine
+      Abfrage) → `flashcards`, `flashcards_gelernt`, `flashcards_gesamt`.
+
+      *Abschnitts-Meldungen vereinheitlichen:* `ABSCHNITT_TAG = "abschnitt"`;
+      `KI_VERLAUF_TAG = "abschnitt ki-verlauf"`, `LERNKARTEN_TAG =
+      "abschnitt lernkarten"`. `base.html` überspringt alles mit
+      `"abschnitt" in message.extra_tags.split`; das Partial
+      `_abschnitt_meldungen.html` zeigt die Meldungen eines Bereichs mit
+      passender Alert-Farbe (`error` → `danger`).
+
+- [ ] **Schritt 4: URLs** -- `goals/<pk>/ai/flashcards/` → `goal_ai_flashcards`;
+      `flashcards/<pk>/toggle/` → `flashcard_toggle`;
+      `flashcards/<pk>/delete/` → `flashcard_delete`.
+
+- [ ] **Schritt 5: UI / Templates**
+      - KI-Card: dritter Button "Lernkarten generieren" mit
+        `data-ki-aktion`/`data-ladetext="Erstelle Lernkarten..."` → das
+        bestehende Script erfasst ihn ohne Änderung.
+      - Abschnitt `#lernkarten` vor dem KI-Verlauf: Kopf mit Zähler, darunter
+        Fortschritt "x von y gelernt" (`progress` mit ARIA-Werten), dann das
+        Akkordeon.
+      - `_flashcards.html`: `accordion` mit je einem Item; Kopf =
+        `accordion-button collapsed` mit Frage (+ Badge "Gelernt");
+        Body = Antwort (`linebreaksbr`) und zwei POST-Formulare
+        (Umschalten, Löschen) mit sprechenden `aria-label`s.
+        IDs pro Karte (`karte-<pk>`), damit `aria-controls` eindeutig ist.
+      - Leerzustand: "Noch keine Lernkarten. …".
+
+- [ ] **Schritt 6: Tests** -- siehe Abschnitt 4.
+
+- [ ] **Schritt 7: Validierung** -- Migration, ruff, Testsuite, Hook;
+      Sichtprüfung im Browser über eine zweite Server-Instanz mit
+      `AI_MOCK_MODE=True` (keine API-Kosten), Prüfnutzer danach löschen.
 
 ## 4. Validierung & Test-Strategie
 
-### Anpassung bestehender Tests (`core/tests/test_ai_views.py`)
+### Neue Tests (`core/tests/test_flashcards.py`)
 
-Vier Tests prüfen den Session-Speicher, den dieses Ticket ersetzt, ein fünfter
-den Listen-Typ im Kontext. Sie werden auf den Datenbank-Vertrag **umgestellt**,
-ihre Absicht bleibt erhalten:
+| Klasse | Testfälle |
+|---|---|
+| `ModellTests` | Sortierung (offen vor gelernt, neueste zuerst); CASCADE beim Goal-Löschen |
+| `MockTests` | 3 Karten, deterministisch, mit Goal-Titel, kein `_call_openai`-Aufruf |
+| `SdkAufrufTests` (Mock aus, SDK gepatcht) | `response_format` mit `json_schema`, `strict: true`, `additionalProperties: false`; konfiguriertes Modell; Prompt enthält nur eigene Goal-Daten und vorhandene Fragen |
+| `ParserTests` | gültige Antwort; ungültiges JSON; Liste statt Objekt; `cards` fehlt / kein Array; Einträge mit leerem/fehlendem Text verworfen; < 3 → Fehler; > 5 → gekürzt; Duplikate in Antwort und gegen Bestand; jeder Fehlerfall wird geloggt |
+| `RefusalTests` | `message.refusal` → `AIServiceError` mit eigener Meldung (nicht "nicht verfügbar") |
+| `GenerierenViewTests` | Karten gespeichert und angehängt (Bestand + Lernstatus bleiben); Redirect `#lernkarten`; Meldung im Abschnitt, genau einmal; Fehler → nichts gespeichert, Meldung im Abschnitt; GET → 405 |
+| `VerwaltenViewTests` | Umschalten hin und zurück; Löschen nur dieser Karte; GET → 405 |
+| `AnzeigeTests` | Akkordeon mit Frage im Kopf, Antwort im eingeklappten Body; Badge "Gelernt"; Fortschritt; Leerzustand; Query-Anzahl bei 2 und 8 Karten gleich; keine Karten anderer Goals |
+| `ScopingTests` | Login-Pflicht für alle drei Routen; fremdes Goal → 404 und Service nicht aufgerufen; fremde Karte umschalten/löschen → 404 ohne Änderung; Gegenprobe mit eigener Karte |
 
-| Test | bisher | künftig |
+### Anpassung bestehender Tests
+
+| Test | Änderung | Grund |
 |---|---|---|
-| `test_actions_not_triggered_by_get` | kein Session-Schlüssel nach GET | `AIFeedback.objects.count() == 0` nach GET |
-| `test_results_are_not_persisted_in_database` | Ergebnis in Session, nicht in DB | **ersetzt** durch `test_results_are_persisted_per_type`: je ein Eintrag pro Typ, Goal-Felder unverändert |
-| `test_failed_action_leaves_no_result_in_session` | kein Session-Schlüssel nach Fehler | umbenannt zu `…_leaves_no_result`: kein `AIFeedback` nach Fehler |
-| `test_own_goal_actions_work` | Session-Schlüssel vorhanden | je ein `AIFeedback` pro Typ für das eigene Goal |
-| `test_next_steps_action_redirects_and_shows_list` | `context["ai_next_steps"]` ist Liste | `context["ai_next_steps"].steps` ist Liste (2–3 Einträge) |
-
-Zusätzlich entfällt der Import der Session-Konstanten. Alle anderen Tests der
-Datei bleiben unverändert.
-
-### Neue Tests (`core/tests/test_ai_feedback.py`)
-
-| Testklasse | Testfall | Prüft |
-|---|---|---|
-| `ModellTests` | `test_sortierung_neueste_zuerst` | `-created_at`, bei Gleichstand `-pk` |
-| | `test_steps_aus_zeilen` | Leerzeilen werden ignoriert |
-| | `test_cascade_beim_goal_loeschen` | Goal löschen → Einträge weg |
-| `SpeichernTests` | `test_summary_wird_gespeichert` | Typ `summary`, Inhalt = Service-Ergebnis |
-| | `test_next_steps_zeilenweise_gespeichert` | Typ `next_steps`, `steps` = Service-Liste |
-| | `test_jede_aktion_ein_neuer_eintrag` | zwei Aufrufe → zwei Einträge (Historie statt Überschreiben) |
-| | `test_fehler_speichert_nichts` | `AIServiceError` → 0 Einträge |
-| | `test_echter_pfad_speichert_modellantwort` | Mock aus, SDK gepatcht → gespeicherter Inhalt = gepatchte Antwort |
-| `AnzeigeTests` | `test_timeline_zeigt_alle_eintraege` | Badge, `<time datetime>`, Inhalte, neueste zuerst |
-| | `test_leerzustand` | Hinweistext, kein "Alle zuruecksetzen" |
-| | `test_neuestes_ergebnis_in_ki_card` | KI-Card zeigt den jüngsten Eintrag je Typ |
-| | `test_abfragen_unabhaengig_von_eintragszahl` | Query-Anzahl bei 2 und 8 Einträgen gleich |
-| | `test_eintraege_anderer_goals_unsichtbar` | Goal A2 zeigt keine Einträge von A |
-| `LoeschenTests` | `test_einzelnen_eintrag_loeschen` | nur dieser Eintrag weg, Redirect auf `#ki-verlauf` |
-| | `test_einzel_loeschen_nicht_per_get` | 405, nichts gelöscht |
-| | `test_alle_zuruecksetzen_bestaetigung` | GET zeigt Bestätigung mit Anzahl, löscht nichts |
-| | `test_alle_zuruecksetzen_betrifft_nur_dieses_goal` | Einträge von Goal A2 bleiben |
-| `ScopingTests` | `test_login_pflicht` | beide Routen → Login-Redirect |
-| | `test_fremder_eintrag_404_ohne_loeschung` | Eintrag von B bleibt erhalten |
-| | `test_fremdes_goal_zuruecksetzen_404` | GET und POST → 404, Einträge von B bleiben |
-
-Die Testklassen erzwingen den Mock zusätzlich lokal per `@override_settings`; der
-`OfflineTestRunner` sichert global ab.
+| `LadezustandTests.test_beide_formulare_markiert_mit_ladetext` (`test_ai_views.py`) | erwartet 3 statt 2 markierte KI-Formulare und den dritten Ladetext | Die KI-Card bekommt einen dritten Button; der Test sichert genau diesen Markup-Vertrag. |
+| `test_ai_feedback.py`, Test-Schlüssel | Literal ersetzt | Konvention, siehe Abschnitt 1 |
 
 **Kommandos** (im aktiven `.venv`):
 
@@ -212,5 +204,4 @@ python manage.py test
 ```
 
 **Abnahmekriterium:** `validate_code.ps1` endet mit Exit-Code 0; alle Bestandstests
-außer den fünf oben dokumentierten Anpassungen unverändert grün; alle neuen Tests
-grün.
+bis auf die oben dokumentierte Anpassung unverändert grün; alle neuen Tests grün.

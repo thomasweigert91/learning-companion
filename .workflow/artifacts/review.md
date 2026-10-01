@@ -1,160 +1,142 @@
-# Code Review: Persistente KI-Historie zu Lernzielen (+ Vorab: .env-Unterstützung)
+# Code Review: KI-Lernkarten-Generator mit interaktiver Abfrage
 
 **Status: APPROVED**
 
 Geprüft gegen `.workflow/artifacts/ticket.md` und `.workflow/artifacts/plan.md`.
-Stand: Django 5.2.17, python-dotenv 1.2.4. **199 Tests** (175 Bestand + 1 Schutztest + 23 neu), `ruff check .` ohne Befund, `makemigrations --check` sauber, `validate_code.ps1` Exit-Code 0.
+Stand: Django 5.2.17, openai 1.109.1. **244 Tests** (205 Bestand + 39 neu), `ruff check .` ohne Befund, `makemigrations --check` sauber, `validate_code.ps1` Exit-Code 0.
 
-> **Kostenschutz während des gesamten Durchlaufs:** Der Dev-Server lief mit echtem OpenAI-Schlüssel. Weder Tests noch Sichtprüfung haben die API erreicht: Tests laufen über den neuen `OfflineTestRunner`, die Sichtprüfung nutzte direkt angelegte Datenbank-Einträge und hat keinen KI-Button ausgelöst.
-
----
-
-## 1. Vorab-Aufgabe: `.env` per python-dotenv
-
-| Kriterium | Nachweis | Erfüllt |
-|---|---|---|
-| `python-dotenv` mit Versionsgrenze | `requirements.txt`: `python-dotenv>=1.0,<2.0`, installiert 1.2.4 | ja |
-| `.env` wird vor allen Einstellungen geladen | `load_dotenv(BASE_DIR / ".env")` direkt nach `BASE_DIR`; frischer `manage.py shell`-Prozess ohne manuell gesetzte Variable → Schlüssel geladen, `is_mock_mode() == False` | ja |
-| Echte Umgebung hat Vorrang | `override=False` (Default) — Container und CI lesen weiter ihre echten Variablen; eine `.env` existiert dort nicht (`.dockerignore`, nicht versioniert) | ja |
-| Tests erreichen nie das echte Konto | `OfflineTestRunner` erzwingt `AI_MOCK_MODE=True` und leeren Schlüssel; `test_testlauf_erzwingt_mock_modus` | ja |
-
-**Warum der Test-Runner nötig ist — belegt, nicht angenommen:** Derselbe Schutztest mit Djangos Standard-Runner (`--testrunner django.test.runner.DiscoverRunner`) **schlägt fehl** (`AssertionError: False is not true`), weil die `.env` den echten Schlüssel in die Test-Settings bringt. Die bestehenden KI-Tests überschreiben den Schlüssel zwar einzeln, aber jeder künftige Test ohne diese Überschreibung hätte echte, kostenpflichtige Aufrufe ausgelöst. Tests, die den Nicht-Mock-Pfad prüfen, überschreiben den globalen Schutz weiterhin gezielt und patchen dabei das SDK.
+> **Kostenschutz:** Kein Schritt dieses Durchlaufs hat die OpenAI-API erreicht. Tests laufen über den `OfflineTestRunner` bzw. mit gepatchtem SDK; die Sichtprüfung lief über eine zweite Server-Instanz mit `AI_MOCK_MODE=True` (die Umgebungsvariable hat Vorrang vor der `.env`).
 
 ---
 
-## 2. Feature 8: Abdeckung der Akzeptanzkriterien
+## 1. Abdeckung der Akzeptanzkriterien
 
 ### Modell
 
-| # | Kriterium | Nachweis | Erfüllt |
-|---|---|---|---|
-| 1 | `AIFeedback` mit `goal` (FK, CASCADE), `feedback_type`, `content`, `created_at` | `core/models.py`; Felder exakt wie spezifiziert, `related_name="ai_feedbacks"` | ja |
-| 2 | Neueste zuerst, `-pk` als Tiebreaker | `test_sortierung_neueste_zuerst`, `test_gleicher_zeitstempel_nach_pk` | ja |
-| 3 | Schritte zeilenweise, `steps`-Property | `test_steps_aus_zeilen` (Leerzeilen und Ränder bereinigt), `test_next_steps_zeilenweise_gespeichert` (Rundreise Liste → DB → Liste) | ja |
-| 4 | Besitzer nur über `goal__user` | kein `user`-Feld; alle Abfragen gehen vom gescopten Goal oder von `goal__user` aus | ja |
-| 5 | Migration `0004_aifeedback` erzeugt und angewendet | `sqlmigrate`: ein `CREATE TABLE` + Index auf `goal_id`, keine bestehende Tabelle berührt; auf die Dev-DB angewendet | ja |
-| 6 | Admin-Registrierung | `AIFeedbackAdmin` mit Liste, Filter nach Typ, Suche | ja |
+| Kriterium | Nachweis | Erfüllt |
+|---|---|---|
+| `Flashcard` mit `goal` (FK, CASCADE), `question`, `answer`, `is_mastered` (default `False`), `created_at` | `core/models.py`, `related_name="flashcards"` | ja |
+| Offene zuerst, darin neueste zuerst | `ordering = ["is_mastered", "-created_at", "-pk"]`; `test_offene_vor_gelernten_darin_neueste_zuerst` | ja |
+| Besitzer nur über `goal__user` | kein `user`-Feld | ja |
+| Migration `0005_flashcard`, additiv | `sqlmigrate`: ein `CREATE TABLE` + Index auf `goal_id`; angewendet | ja |
+| Admin | `FlashcardAdmin` mit Liste, Filter, Suche | ja |
 
-### Speichern
+### Service
 
-| # | Kriterium | Nachweis | Erfüllt |
-|---|---|---|---|
-| 7 | Genau ein Eintrag pro erfolgreicher Aktion, richtiger Typ | `test_summary_wird_gespeichert`, `test_next_steps_zeilenweise_gespeichert`, `test_results_are_persisted_per_type` | ja |
-| 8 | Historie statt Überschreiben | `test_jede_aktion_ein_neuer_eintrag` (2 Aufrufe → 2 Einträge) | ja |
-| 9 | Fehler → nichts gespeichert | `test_fehler_speichert_nichts` (beide Aktionen), `test_failed_action_leaves_no_result` | ja |
-| 10 | Echter Pfad speichert die Modellantwort | `test_echter_pfad_speichert_modellantwort`: Mock aus, `_call_openai` gepatcht, gespeichert wird die bereinigte Antwort | ja |
-| 11 | Session-Speicher vollständig entfernt | `AI_SUMMARY_KEY`/`AI_NEXT_STEPS_KEY` und alle `request.session`-Zugriffe der KI-Views entfernt; `grep` in Code und Tests ohne Treffer | ja |
-| 12 | `ai_service` bleibt datenbankfrei | Datei unverändert; `test_service_does_not_touch_database` grün; gespeichert wird in `GoalAIActionMixin.post` | ja |
-| 13 | Auch Mock-Ergebnisse werden gespeichert | Mock-Text trägt bereits "[Mock-Modus]" und ist in der Historie als solcher erkennbar | ja |
+| Kriterium | Nachweis | Erfüllt |
+|---|---|---|
+| `generate_flashcards(goal)` liefert Dicts, schreibt nichts in die DB | einziger DB-Zugriff ist das Lesen vorhandener Fragen; gespeichert wird in der View | ja |
+| Kontext = eigenes Goal; vorhandene Fragen gedeckelt im Prompt | `test_prompt_nur_mit_eigenen_goal_daten` (Notiz und Titel von B fehlen), `test_vorhandene_fragen_im_prompt` (Fragen anderer Goals fehlen); Deckel `MAX_EXISTING_QUESTIONS = 30` | ja |
+| Structured Output `json_schema`, `strict: true`, `additionalProperties: false` auf jeder Ebene | `test_structured_output_mit_strict_schema` prüft das an den echten Aufrufparametern | ja |
+| Konfiguriertes Modell (Standard `gpt-4o-mini`) | `test_konfiguriertes_modell` | ja |
+| 3–5 im Code durchgesetzt | `test_zu_wenige_karten`, `test_zu_viele_karten_werden_gekuerzt` | ja |
+| Fehlerfälle → `AIServiceError` + Log, nie 500 | `ParserTests`: ungültiges JSON, Liste statt Objekt, `cards` fehlt / kein Array, unvollständige Einträge verworfen, zu wenige; jeder Fehlerfall mit `assertLogs` | ja |
+| Refusal | `test_refusal_wird_eigener_fehler` — eigene Meldung "abgelehnt", **nicht** in "nicht verfügbar" umgedeutet | ja |
+| Duplikate in der Antwort und gegen Bestand verworfen | `test_duplikate_in_antwort_und_gegen_bestand` (Groß-/Kleinschreibung, Ränder), `test_nur_duplikate_ergeben_fehler` | ja |
+| Mock: deterministisch 3 Karten | `test_drei_deterministische_karten_ohne_api` | ja |
+| Text-Aktionen unverändert | `test_textaktionen_ohne_response_format`: Zusammenfassung sendet weiterhin kein `response_format` | ja |
 
-### Anzeige
+### Aktion, Verwaltung, Anzeige
 
-| # | Kriterium | Nachweis | Erfüllt |
-|---|---|---|---|
-| 14 | KI-Card zeigt neuestes Ergebnis je Typ, mit Datum | `test_neuestes_ergebnis_in_ki_card` (ältere Einschätzung erscheint nicht in der Card); im Browser: nach Löschen des neuesten Eintrags fällt die Card korrekt auf den nächstälteren zurück | ja |
-| 15 | Timeline `#ki-verlauf`: Datum (`<time datetime>`), Typ-Badge, formatierter Text, neueste zuerst | `test_timeline_zeigt_alle_eintraege`; Screenshot begutachtet | ja |
-| 16 | Leerzustand | `test_leerzustand` (Hinweis da, "Alle zuruecksetzen" nicht) | ja |
-| 17 | Keine N+1-Abfragen | **eine** Abfrage für die gesamte Historie; das Neueste je Typ wird aus derselben Liste gewählt; `test_abfragen_unabhaengig_von_eintragszahl` (2 vs. 8 Einträge, gleiche Query-Zahl) | ja |
-| 18 | Keine Einträge fremder Goals | `test_eintraege_anderer_goals_unsichtbar` | ja |
+| Kriterium | Nachweis | Erfüllt |
+|---|---|---|
+| Button in der KI-Card, nur POST | `test_nicht_per_get` (405, nichts gespeichert) | ja |
+| Anhängen, Lernstatus bleibt; Redirect `#lernkarten`; Meldung im Abschnitt | `test_karten_werden_angehaengt_lernstatus_bleibt`, `test_meldung_im_abschnitt_genau_einmal` | ja |
+| Fehler → nichts gespeichert, Meldung im Abschnitt | `test_fehler_speichert_nichts_meldung_im_abschnitt` (rot als `alert-danger`) | ja |
+| Ladezustand wie die anderen KI-Buttons | dritter `data-ki-aktion`-Button, `data-ladetext="Erstelle Lernkarten..."`; das bestehende Script erfasst ihn ohne Änderung | ja |
+| Umschalten / Löschen nur per POST | `VerwaltenViewTests` | ja |
+| Akkordeon: Frage sichtbar, Antwort eingeklappt | `test_frage_im_kopf_antwort_eingeklappt` (`collapsed`, `aria-expanded="false"`, Antwort nicht im Kopf) | ja |
+| Badge "Gelernt" mit Text, Fortschritt "x von y" | `test_gelernt_badge_und_fortschritt` (inkl. `aria-valuenow="50"`) | ja |
+| Leerzustand | `test_leerzustand` | ja |
+| Feste Abfrage-Anzahl | `test_abfragen_unabhaengig_von_kartenzahl` (2 vs. 8 Karten) | ja |
 
-### Löschen
+### Isolation und Sicherheit
 
-| # | Kriterium | Nachweis | Erfüllt |
-|---|---|---|---|
-| 19 | Einzel-Löschen per POST, Redirect auf `#ki-verlauf`, Meldung | `test_einzelnen_eintrag_loeschen`; im Browser durchgeklickt | ja |
-| 20 | "Alle zurücksetzen": GET bestätigt, POST löscht nur dieses Goal | `test_alle_zuruecksetzen_bestaetigung` (GET löscht nichts), `test_alle_zuruecksetzen_betrifft_nur_dieses_goal` | ja |
-| 21 | Login-Pflicht, 404 für Fremdes **ohne** Löschung, GET → 405 | `ScopingTests` (4 Fälle inkl. Gegenprobe), `test_einzel_loeschen_nicht_per_get` | ja |
-| 22 | CASCADE beim Goal-Löschen, Hinweis in der Bestätigung | `test_cascade_beim_goal_loeschen`; Text nennt jetzt Lernsitzungen, Ressourcen und KI-Verlauf | ja |
+| Kriterium | Nachweis | Erfüllt |
+|---|---|---|
+| Login-Pflicht für alle drei Routen | `test_login_pflicht` (nichts geändert) | ja |
+| Fremdes Goal → 404, Service nicht aufgerufen | `test_fremdes_goal_404_ohne_service_aufruf` | ja |
+| Fremde Karte umschalten/löschen → 404 ohne Änderung | `test_fremde_karte_umschalten_und_loeschen_404`, Gegenprobe `test_gegenprobe_eigene_karte` | ja |
+| Keine Karten fremder Goals in der Anzeige | `test_karten_anderer_goals_unsichtbar` | ja |
+| KI-Text escaped | `test_ki_text_wird_escaped`: `<script>` und `<b>` aus Frage/Antwort erscheinen nur escaped | ja |
+| CASCADE, Hinweis in der Goal-Löschbestätigung | `test_cascade_beim_goal_loeschen`; Text nennt Lernkarten | ja |
 
 ---
 
-## 3. Sicherheit
+## 2. Gegenproben (Mutationen, jeweils zurückgesetzt)
 
-**Mandantentrennung — per Mutation geprüft:**
-
-| Mutation (danach zurückgesetzt) | Ergebnis |
+| Mutation | Erkannt durch |
 |---|---|
-| `AIFeedback.objects.create(...)` entfernt | 8 Tests rot (Speichern, Anzeige, Scoping-Gegenprobe) |
-| Einzel-Löschen ohne `goal__user`-Filter | `test_fremder_eintrag_404_ohne_loeschung` rot |
-| "Zurücksetzen" löscht alle Einträge des Nutzers statt des Goals | `test_alle_zuruecksetzen_betrifft_nur_dieses_goal` rot |
+| Refusal wird in "nicht verfügbar" umgedeutet (`except AIServiceError: raise` entfernt) | `test_refusal_wird_eigener_fehler` |
+| `response_format` wird nicht durchgereicht | `test_structured_output_mit_strict_schema` |
+| Duplikate gegen den Bestand nicht geprüft | 3 Tests, inkl. Mock-Pfad |
+| Mindestanzahl nicht durchgesetzt | `test_zu_wenige_karten`, `test_nur_duplikate_ergeben_fehler` |
+| Umschalten/Löschen ohne `goal__user`-Filter | `test_fremde_karte_umschalten_und_loeschen_404` |
+| Generieren speichert nicht | 2 Tests |
+| Karten eines Durchlaufs in Einfügereihenfolge statt umgekehrt | `test_reihenfolge_der_ki_bleibt_neue_durchlaeufe_oben` |
 
-Beide Lösch-Views folgen dem Projektmuster "gefiltert statt nachträglich geprüft": Ein fremder PK ist im Queryset nicht enthalten, die 404 fällt, bevor irgendetwas gelöscht wird.
-
-**XSS durch KI-Ausgaben:** Modellantworten sind nicht vertrauenswürdige Eingaben — ein Prompt-Injection-Versuch in Notizen oder Ressourcen-Titeln könnte HTML in der Antwort provozieren. Ausgegeben wird ausschließlich über `|linebreaksbr` (escaped vor dem Umbruch) bzw. `{{ schritt }}` (Autoescape). Kein `|safe` im neuen Code.
-
-**CSRF / Methoden:** Beide Lösch-Aktionen sind POST mit `{% csrf_token %}`; GET auf die Einzel-Löschroute → 405, GET auf "Zurücksetzen" zeigt nur die Bestätigung.
-
-**Secrets:** `.env` bleibt durch `.gitignore` und `.dockerignore` außerhalb von Repository und Image. Der Testlauf ist vom echten Konto getrennt (Abschnitt 1).
+Alle 7 Mutationen färben mindestens einen Test rot.
 
 ---
 
-## 4. Befund der Sichtprüfung: Erfolgsmeldung außerhalb des Sichtbereichs
+## 3. Befunde während der Umsetzung (alle behoben)
 
-**Gefunden:** Nach dem Löschen leitet die View auf `#ki-verlauf` um, damit man an der Stelle bleibt, an der man gearbeitet hat. Die Erfolgsmeldung erschien aber im globalen Meldungsbereich oben auf der Seite — im Browser gemessen **671 px oberhalb des sichtbaren Bereichs**. Wer löscht, sah keine Bestätigung.
+**1. Refusal hätte bestehende Tests gebrochen.** Die Service-Tests aus Feature 4 patchen das SDK mit `MagicMock`; dort ist `message.refusal` ein truthy Mock-Objekt. Eine naive Prüfung `if nachricht.refusal:` hätte jede gepatchte Antwort als Ablehnung gewertet. Lösung: Nur ein nicht-leerer **String** zählt als Ablehnung. Bestandstests unverändert grün.
 
-**Behoben:** Meldungen der KI-Historie tragen `extra_tags="ki-verlauf"`. `base.html` überspringt sie, `_ai_timeline.html` zeigt sie direkt im Abschnitt an. Nachgemessen: Meldung sichtbar (509 px im Viewport), genau **eine** Meldung auf der Seite. Abgesichert durch `test_meldung_erscheint_im_verlauf_statt_oben` (genau ein Vorkommen, und zwar nach `id="ki-verlauf"`).
+**2. Reihenfolge innerhalb eines Durchlaufs war umgekehrt** (Sichtprüfung). `bulk_create` vergibt aufsteigende Zeitstempel, die Sortierung "neueste zuerst" kehrte die Reihenfolge der KI um — die Einstiegsfrage stand unten. `auto_now_add` überschreibt vorgegebene Zeitstempel, daher werden die Karten eines Durchlaufs in umgekehrter Reihenfolge angelegt; der `-pk`-Tiebreaker hält das auch bei identischen Zeitstempeln konsistent. Abgesichert durch einen Test über zwei Durchläufe.
+
+**3. Der Mock-Modus umging den Duplikat-Schutz.** Ohne API-Schlüssel legte jeder Klick dieselben drei Beispielkarten erneut an — entgegen dem Ticket-Kriterium. Die Duplikat-Prüfung ist jetzt eine eigene Funktion `_ohne_duplikate`, die Parser und Mock gemeinsam nutzen. Im Browser bestätigt: Nach dem Löschen einer Karte liefert der nächste Klick genau diese eine zurück, ein weiterer Klick meldet "[Mock-Modus] Alle Beispiel-Lernkarten sind bereits vorhanden."
+
+**4. "1 Lernkarten erstellt."** (Sichtprüfung) — Einzahl korrigiert, `test_meldung_in_der_einzahl`.
+
+**5. Schlüsselartiges Literal aus Feature 8.** `test_ai_feedback.py` enthielt `"sk-test-…"` als Test-Schlüssel — ein Verstoß gegen die Konvention aus Feature 4, den ich in Feature 8 selbst eingeführt hatte. Ersetzt durch den Platzhalter der Konvention; `git grep "sk-"` über Code und Tests ist leer.
+
+---
+
+## 4. Code-Qualität
+
+- **Mixin sauber verallgemeinert:** `GoalAIActionMixin` kennt nur noch Ablauf, Fehlerbehandlung, Meldungsort und Sprungziel; `AIFeedbackActionMixin` speichert in den Verlauf, `FlashcardGenerateView` als Lernkarten. Zusammenfassung und nächste Schritte verhalten sich unverändert — alle 205 Bestandstests liefen nach dem Refactoring vor dem ersten neuen Test grün.
+- **Abschnitts-Meldungen vereinheitlicht:** statt einer Sonderregel pro Abschnitt ein Tag `abschnitt` plus Bereichsname und ein gemeinsames Partial `_abschnitt_meldungen.html`; der KI-Verlauf nutzt es ebenfalls. Fehler erscheinen dort jetzt korrekt rot (vorher kannte der Abschnitt nur Erfolgsmeldungen).
+- **`_call_openai` minimal erweitert:** `response_format` wird nur gesetzt, wenn übergeben — die Text-Aufrufe sind byte-identisch, belegt durch `test_textaktionen_ohne_response_format`.
+- **Schema bewusst ohne `minItems`/`maxItems`:** Ob der Strict-Modus diese Schlüsselwörter akzeptiert, ließ sich ohne kostenpflichtigen Aufruf nicht verifizieren; ein nicht unterstütztes Schlüsselwort hätte *jede* Anfrage scheitern lassen. Die Anzahl wird ohnehin im Code durchgesetzt.
 
 ---
 
 ## 5. Barrierefreiheit
 
-- Timeline als `<ol>`: die Reihenfolge ist Teil der Information und wird Screenreadern als Liste mit Anzahl angesagt.
-- Zeitpunkte als `<time datetime="…">` in maschinenlesbarem ISO-Format.
-- Typ nie nur über Farbe: Badge mit Icon **und** Text; Timeline-Punkte sind reine Zierde.
-- Lösch-Buttons mit sprechendem `aria-label` ("KI-Eintrag (Zusammenfassung) vom 01.10.2026 13:06 loeschen") — in einer Liste gleicher Icons sonst nicht unterscheidbar.
-- Lösch-Button bewusst als `btn-sm btn-outline-danger` statt als nackter Icon-Link mit `p-0`: Letzterer hätte die Mindest-Zielgröße von 24×24 px (WCAG 2.5.8) unterschritten.
-- Abschnitt mit `aria-labelledby`; Erfolgsmeldung mit `role="status"`.
+- Akkordeon nach Bootstrap-Muster: `<button>` mit `aria-expanded`/`aria-controls`, Inhalt mit `aria-labelledby` auf die Frage; je Karte eindeutige IDs (`karte-<pk>`).
+- Fragen als `<h3>` unter der Abschnittsüberschrift `<h2>` — per Überschriften-Navigation ansteuerbar.
+- Umschalt- und Lösch-Buttons tragen einen visuell versteckten Kontext ("(Lernkarte: …)"); in der Button-Liste eines Screenreaders sind fünf "Als gelernt markieren" sonst nicht unterscheidbar.
+- "Gelernt" als Text im Badge, nicht nur als Farbe; Fortschrittsbalken mit `role="progressbar"`, sprechendem `aria-label` und `aria-valuenow`.
+- Erfolgs- und Fehlermeldungen im Abschnitt mit `role="status"` bzw. `role="alert"`; im Browser nach dem Sprung auf `#lernkarten` sichtbar gemessen.
 
 ---
 
 ## 6. Anpassung bestehender Tests
 
-Ein Bestandsmodul wurde geändert: `core/tests/test_ai_views.py` (+23/−12). Grund ist die im Ticket festgehaltene **Vertragsumkehr** — Feature 4 hat per Test festgeschrieben, dass Ergebnisse nur in der Session und nie in der Datenbank liegen. Die Absicht jedes Tests bleibt erhalten, nur das Speichermedium wechselt:
-
-| Test | Änderung |
-|---|---|
-| `test_actions_not_triggered_by_get` | Session-Schlüssel → `AIFeedback.objects.count() == 0` |
-| `test_results_are_not_persisted_in_database` | ersetzt durch `test_results_are_persisted_per_type` (Gegenteil, wie vom Ticket gefordert) |
-| `test_failed_action_leaves_no_result_in_session` | → `test_failed_action_leaves_no_result`, prüft die DB |
-| `test_own_goal_actions_work` | Session-Schlüssel → je ein Eintrag pro Typ |
-| `test_next_steps_action_redirects_and_shows_list` | `context["ai_next_steps"]` → `.steps` |
-
-Kein Test wurde abgeschwächt; alle übrigen Bestandsmodule sind unverändert.
+| Datei | Änderung | Grund |
+|---|---|---|
+| `test_ai_views.py` | `test_beide_formulare_…` → `test_alle_ki_formulare_…`: 3 statt 2 markierte KI-Formulare, dritter Ladetext | Die KI-Card bekommt laut Ticket einen dritten Button mit demselben Ladezustand. |
+| `test_ai_feedback.py` | Test-Schlüssel-Literal ersetzt | Befund 5 |
 
 ---
 
-## 7. Abweichungen gegenüber dem Plan
-
-| Abweichung | Bewertung |
-|---|---|
-| `extra_tags="ki-verlauf"` und Meldungsanzeige im Abschnitt | Fix aus der Sichtprüfung, Abschnitt 4. |
-| Lösch-Button als Outline-Button statt Icon-Link | Zielgröße, Abschnitt 5. |
-| 23 statt 22 neue Tests | zusätzlich `test_gleicher_zeitstempel_nach_pk`, `test_eigene_loeschung_funktioniert` (Gegenprobe) und `test_meldung_erscheint_im_verlauf_statt_oben`. |
-| Link "Zum KI-Verlauf (n)" im Fuß der KI-Card | Die Timeline steht am Ende der Hauptspalte; der Link verbindet die Card mit dem Verlauf. Additiv. |
-
----
-
-## 8. Hinweis für den Betrieb
-
-`python-dotenv` ist eine neue Laufzeit-Abhängigkeit und wird von `settings.py` importiert. Ein vorhandenes, älteres Docker-Image muss daher **neu gebaut** werden (`docker compose build`), sonst startet es mit `ModuleNotFoundError`. Die CI baut das Image bei jedem Lauf neu und deckt das ab.
-
----
-
-## 9. Verifikation
+## 7. Verifikation
 
 ```powershell
 ruff check .                                        # All checks passed!
 python manage.py makemigrations --check --dry-run   # No changes detected
-python manage.py test                               # Ran 199 tests — OK
+python manage.py test                               # Ran 244 tests — OK
 .\.workflow\hooks\validate_code.ps1                 # Exit-Code 0
+git grep "sk-" (Code und Tests)                     # keine Treffer
 ```
 
-**Sichtprüfung** mit temporärem Prüfnutzer und direkt angelegten Einträgen (keine API-Aufrufe): Timeline mit vier Einträgen, Einzel-Löschen mit Rückfall der KI-Card, Bestätigungsseite, "Alle zurücksetzen", Leerzustand; 0 Konsolenfehler. Prüfnutzer samt Daten anschließend gelöscht — in der Dev-Datenbank sind nur dein Konto, 0 KI-Einträge und 0 Tags.
+**Sichtprüfung** (Mock-Server, temporärer Prüfnutzer, anschließend samt Daten gelöscht): Generieren mit Spinner, Meldung im Abschnitt, Reihenfolge, Aufklappen, "Als gelernt markieren" mit Umsortierung und Fortschritt 1 von 3, Löschen, Neu-Generieren mit Duplikat-Schutz, Fehlermeldung im Abschnitt; 0 Konsolenfehler. Die Dev-Datenbank enthält danach wieder nur dein Konto mit deinen eigenen KI-Einträgen und 0 Lernkarten.
 
 ---
 
-## 10. Fazit
+## 8. Fazit
 
-KI-Ergebnisse überleben jetzt Logout und Browserwechsel, bilden eine nachvollziehbare Historie und lassen sich einzeln oder gesamt löschen — streng auf den Besitzer begrenzt, wie die Mutationsproben belegen. Die `.env`-Unterstützung macht den lokalen Start bequem, ohne die Testsuite an das echte, kostenpflichtige Konto zu koppeln. Ein Bedienfehler (unsichtbare Erfolgsmeldung) wurde in der Sichtprüfung gefunden und behoben.
+Der Generator liefert strukturierte Lernkarten über Structured Outputs, validiert jede Antwort selbst und fängt alle Fehlerfälle — kaputtes JSON, falsche Struktur, zu wenige Karten, Duplikate, Ablehnung — mit verständlichen Meldungen ab. Die Abfrage-Ansicht ist zugänglich und mandantensicher; die Gegenproben belegen, dass die Tests die kritischen Stellen tatsächlich bewachen. Vier Mängel wurden in Umsetzung und Sichtprüfung gefunden und behoben, ein fünfter aus Feature 8 gleich mit.
 
 **Freigabe erteilt: APPROVED.**

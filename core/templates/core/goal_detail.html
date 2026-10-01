@@ -100,6 +100,32 @@
                 </div>
             </section>
 
+            {# --- Lernkarten -------------------------------------------------- #}
+            <section class="card border-0 shadow-sm" id="lernkarten" aria-labelledby="titel-lernkarten">
+                <div class="card-header bg-body py-3">
+                    <h2 class="h5 mb-0" id="titel-lernkarten">
+                        <i class="bi bi-card-checklist me-2 text-success" aria-hidden="true"></i>Lernkarten
+                        {% if flashcards_gesamt %}<span class="badge rounded-pill text-bg-light border ms-1">{{ flashcards_gesamt }}<span class="visually-hidden"> Karten</span></span>{% endif %}
+                    </h2>
+                </div>
+                <div class="card-body">
+                    {% include "core/_abschnitt_meldungen.html" with bereich="lernkarten" %}
+                    {% if flashcards_gesamt %}
+                        {% widthratio flashcards_gelernt flashcards_gesamt 100 as gelernt_prozent %}
+                        <div class="d-flex justify-content-between small mb-1">
+                            <span>Fortschritt</span>
+                            <span>{{ flashcards_gelernt }} von {{ flashcards_gesamt }} gelernt</span>
+                        </div>
+                        <div class="progress mb-3" role="progressbar"
+                             aria-label="Lernkarten: {{ flashcards_gelernt }} von {{ flashcards_gesamt }} gelernt"
+                             aria-valuenow="{{ gelernt_prozent }}" aria-valuemin="0" aria-valuemax="100" style="height: .5rem">
+                            <div class="progress-bar bg-success" style="width: {{ gelernt_prozent }}%"></div>
+                        </div>
+                    {% endif %}
+                    {% include "core/_flashcards.html" %}
+                </div>
+            </section>
+
             {# --- KI-Verlauf -------------------------------------------------- #}
             <section class="card border-0 shadow-sm" id="ki-verlauf" aria-labelledby="titel-ki-verlauf">
                 <div class="card-header bg-body d-flex flex-wrap justify-content-between align-items-center gap-2 py-3">
@@ -137,6 +163,12 @@
                         {% csrf_token %}
                         <button type="submit" class="btn btn-outline-primary" data-ladetext="Ermittle nächste Schritte...">
                             <i class="bi bi-signpost-2 me-1" aria-hidden="true"></i>Naechste Schritte vorschlagen
+                        </button>
+                    </form>
+                    <form action="{% url 'core:goal_ai_flashcards' goal.pk %}" method="post" class="d-grid" data-ki-aktion>
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-outline-primary" data-ladetext="Erstelle Lernkarten...">
+                            <i class="bi bi-card-checklist me-1" aria-hidden="true"></i>Lernkarten generieren
                         </button>
                     </form>
                     {# Dauerhaft vorhandene Live-Region: Screenreader sagen Textaenderungen nur hier an, nicht am Button. #}

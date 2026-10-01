@@ -57,6 +57,22 @@ urlpatterns = [
         views.GoalNextStepsView.as_view(),
         name="goal_ai_next_steps",
     ),
+    # Lernkarten (pk adressiert beim Generieren das Goal, sonst die Karte)
+    path(
+        "goals/<int:pk>/ai/flashcards/",
+        views.FlashcardGenerateView.as_view(),
+        name="goal_ai_flashcards",
+    ),
+    path(
+        "flashcards/<int:pk>/toggle/",
+        views.FlashcardToggleView.as_view(),
+        name="flashcard_toggle",
+    ),
+    path(
+        "flashcards/<int:pk>/delete/",
+        views.FlashcardDeleteView.as_view(),
+        name="flashcard_delete",
+    ),
     # KI-Historie (pk adressiert beim Zuruecksetzen das Goal, beim Loeschen den Eintrag)
     path(
         "goals/<int:pk>/ai/history/clear/",
